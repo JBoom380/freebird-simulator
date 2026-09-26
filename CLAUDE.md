@@ -1,6 +1,6 @@
-# CRIMSON THRONE
+# FREEBIRD SIMULATOR (formerly Crimson Throne)
 
-An 18+ open-world dark-fantasy action RPG. It is served at https://games.johnslagboom.com/crimson-throne/ (GitHub Pages, repo JBoom380/crimson-throne).
+An 18+ open-world dark-fantasy action RPG. It is served at https://games.johnslagboom.com/freebird-simulator/ (GitHub Pages, repo JBoom380/freebird-simulator; the old /crimson-throne/ URL redirects).
 
 - Edit `src/*.js`, then run `python src/build.py`. It inlines everything into `index.html`, one offline file. Never edit `index.html` by hand.
 - `src/SPEC.md` is the contract between the modules. `game.js` is the core.

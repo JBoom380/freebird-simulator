@@ -561,7 +561,7 @@ window.CT = window.CT || {};
   const LOGO = { w: 1240, h: 470 };
   const logo = () => once('logo', () => {
     const c = mk(LOGO.w, LOGO.h), g = c.getContext('2d');
-    const T = bloodText([{ s: 'CRIMSON', px: 150, y: 168 }, { s: 'THRONE', px: 162, y: 318 }], { w: LOGO.w, h: LOGO.h, drips: 4, seed: 5 });
+    const T = bloodText([{ s: 'FREEBIRD', px: 146, y: 168 }, { s: 'SIMULATOR', px: 124, y: 318 }], { w: LOGO.w, h: LOGO.h, drips: 4, seed: 5 });
     g.drawImage(T.c, 0, 0);
     // subtitle with flourishes
     const sy = 432;
