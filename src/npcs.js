@@ -860,68 +860,38 @@
   }
   npcs.companion = { banter, speak, get state() { return comp(); }, get npc() { return COMP.n; }, debug: COMP };
 
-  // ── Painted sprite billboards (sprites.js, from tools/make_sprites.py) ─────
-  // A camera-facing plane (turns around Y only) with the painted frame chosen by the angle between her facing and the
-  // camera: a0, a35 (for about 45), a90, a180; the 35 and 90 frames mirror for the other side. The 3D model stays as the
-  // fallback and is hidden while the sprite is active. alphaTest keeps it in the opaque pass (no sorting with fire/fog).
-  // Any npc with CT.sprites[id] gets the billboard (the four heroines now). Vesna's frames are body-relative; with the sprite
-  // active her facing logic turns her BODY (yawNow) toward the target, so her front frame shows when she faces you and the
-  // 135 degree rig offset of the 3D sculpt does not apply.
-  const hasSprite = id => !!(CT.sprites && CT.sprites[id] && CT.sprites[id].frames && CT.sprites[id].frames.a0);
-  function attachSprite(n) { if (!n || !hasSprite(n.id)) return; try { n.spr = spriteRig(n.id); } catch (e) { console.warn('[npcs] sprite failed', n.id, e); n.spr = null; } }
-  function spriteRig(id) {
-    const SP = CT.sprites && CT.sprites[id]; if (!SP || !SP.frames || !SP.frames.a0) return null;
-    const tex = {};
-    Object.keys(SP.frames).forEach(k => {
-      const img = new Image(), t = new T.Texture(img);
-      t.colorSpace = T.SRGBColorSpace; t.minFilter = T.LinearMipmapLinearFilter; t.magFilter = T.LinearFilter; t.generateMipmaps = true; t.anisotropy = 4;
-      img.onload = () => { t.needsUpdate = true; }; img.src = SP.frames[k].src; tex[k] = t;
-    });
-    const geo = new T.PlaneGeometry(1, 1); geo.translate(0, 0.5, 0);
-    // lit by the scene (Lambert) plus an emissive copy of the painting so she never sinks into the dark side of a plane
-    const mat = new T.MeshLambertMaterial({ map: tex.a0, emissive: 0xffffff, emissiveMap: tex.a0, emissiveIntensity: 0.55, alphaTest: 0.5, side: T.DoubleSide });
-    const root = new T.Group(), mesh = new T.Mesh(geo, mat); root.add(mesh); root.name = 'sprite_' + id;
-    const sh = new T.Mesh(G.geo.disc, basic('#000000', 0.38)); sh.rotation.x = -PI / 2; sh.position.y = 0.03; sh.scale.set(0.46, 0.34, 1); sh.renderOrder = -1; root.add(sh);
-    group.add(root);
-    return { root, mesh, mat, tex, frames: SP.frames, H: SP.height || 1.83, key: null, mir: 1, bob: 0, ph: (hash(id) % 100) / 17 };
+  // ── Painted sprite billboards (billboard.js over sprites.js) ───────────────
+  // The heroines, Selene, Bram, Old Mag, the villagers and the guards are painted billboards; the 3D rigs (heroines.js,
+  // humanoid.js, the primitive rigs) stay as the fallback and are hidden while a billboard is active.
+  // Vesna's frames are body-relative; with the billboard her facing logic turns her BODY (yawNow), so the 135 degree rig
+  // offset of her 3D sculpt does not apply and her front frame shows when she faces you.
+  function spriteIdFor(n) {
+    if (n.kind === 'heroine' || n.kind === 'companion') return n.id;
+    if (n.id === 'bram') return 'bram';
+    if (n.id === 'mag') return 'oldmag';
+    const v = VILLAGERS.find(v => v.id === n.id); if (!v) return null;
+    return v.task === 'spear' ? 'militia' : v.fem ? 'villager_f' : 'villager_m';
   }
-  const SPR_RANGE = { a0: [0, 20], a35: [20, 62], a90: [62, 125], a180: [125, 181] };
-  function spriteFrame(rel, cur) {
-    const a = Math.abs(rel) * 180 / PI, sg = rel < 0 ? -1 : 1;
-    // hysteresis: keep the current frame until the view is 6 degrees past its edge (no flicker while she turns)
-    if (cur && cur.key && SPR_RANGE[cur.key]) {
-      const [lo, hi] = SPR_RANGE[cur.key], mirOk = cur.key === 'a0' || cur.key === 'a180' || cur.mir === (sg < 0 ? -1 : 1) || a < 8 || a > 172;
-      if (a >= lo - 6 && a < hi + 6 && mirOk) return cur;
+  function attachSprite(n) {
+    if (!n || !CT.billboard) return;
+    const sid = spriteIdFor(n); if (!sid || !CT.billboard.has(sid)) return;
+    const o = { parent: group, ph: (hash(n.id) % 100) / 17 };
+    if (n.kind === 'villager') {   // the crowd is not identical: a small warm/cool shift, brightness and height per villager
+      const h = hash(n.id + 'tint'), u = ((h % 1000) / 500) - 1, b = 0.9 + ((h >>> 10) % 100) / 700;
+      o.tint = [b * (1 + 0.07 * u), b, b * (1 - 0.07 * u)];
+      const v = VILLAGERS.find(v => v.id === n.id); o.scale = (v && v.scale) || 1;
     }
-    const key = a < 20 ? 'a0' : a < 62 ? 'a35' : a < 125 ? 'a90' : 'a180';
-    return { key, mir: (key === 'a35' || key === 'a90') && rel < 0 ? -1 : 1 };
+    try { n.spr = CT.billboard.make(sid, o); } catch (e) { console.warn('[npcs] billboard failed', n.id, e); n.spr = null; }
   }
-  function spriteUpdate(n, dt, c, walk) {
-    const S = n.spr, cam = c.camera.position;
-    S.root.position.copy(n.pos);
-    const toCam = Math.atan2(cam.x - n.pos.x, cam.z - n.pos.z);
-    S.root.rotation.y = toCam;
-    let rel = toCam - n.yawNow; while (rel > PI) rel -= TAU; while (rel < -PI) rel += TAU;
-    const F = spriteFrame(rel, { key: S.key, mir: S.mir });
-    if (F.key !== S.key || F.mir !== S.mir) {
-      if (S.key) S.bob = 1;
-      S.key = F.key; S.mir = F.mir; S.mat.map = S.mat.emissiveMap = S.tex[F.key];
-    }
-    const m = S.frames[S.key], Hw = S.H / Math.max(0.1, m.bottom - m.top), Ww = Hw * m.w / m.h, t = time + S.ph;
-    S.bob = Math.max(0, S.bob - dt * 3.5);
-    S.mesh.scale.set(Ww * S.mir, Hw * (1 + Math.sin(t * 1.7) * 0.01), 1);
-    // walking (the companion): a step bob and a lean into the direction of travel as seen from the camera
-    let wb = 0, lean = 0;
-    if (walk && walk.amt > 0.03) {
-      wb = Math.abs(Math.sin(walk.ph)) * 0.035 * Math.min(1, walk.amt);
-      const rx = Math.cos(toCam), rz = -Math.sin(toCam), sp = Math.hypot(walk.vx, walk.vz) || 1;   // the plane's right axis
-      lean = -((walk.vx * rx + walk.vz * rz) / sp) * 0.06 * Math.min(1, walk.amt);
-      S.mesh.scale.y *= 1 + Math.sin(walk.ph * 2) * 0.012;
-    }
-    S.mesh.position.set((0.5 - m.ax) * Ww * S.mir, -(1 - m.bottom) * Hw + Math.sin(S.bob * PI) * 0.025 + wb, 0);
-    S.mesh.rotation.z = Math.sin(t * 0.42) * 0.008 + lean;
+  function workOf(n) {
+    if (n.id === 'bram') return 'hammer';
+    if (n.task === 'hoe' || n.task === 'sweep') return n.task;
+    return null;
   }
-  npcs.spriteFrame = spriteFrame;
+  function spriteUpdate(n, dt, c, walk, work) {
+    CT.billboard.update(n.spr, c.camera.position, n.pos.x, n.pos.y, n.pos.z, n.yawNow, dt, time, { walk, work });
+  }
+  npcs.spriteFrame = (rel, cur) => CT.billboard.pick([[0, 'a0'], [35, 'a35'], [90, 'a90'], [180, 'a180']], rel, cur);
 
   // ── Shadow blob ────────────────────────────────────────────────────────────
   function blob(R) {
@@ -946,6 +916,7 @@
     VILLAGERS.forEach((v, i) => {
       v.seed = hash(v.id); v.scale = v.scale || (v.fem ? 0.93 : 1.0) + (v.seed % 5) * 0.012;
       npcs.list.push(mk(Object.assign({ kind: 'villager', tags: v.task === 'spear' ? ['guard', 'villager'] : ['villager', 'merchant', 'guard'] }, v), kitRig(v.id, v) || buildVillager(v), { dlg: 'villager', lines: v.lines, task: v.task, portrait: v.id }));
+      attachSprite(npcs.list[npcs.list.length - 1]);
     });
     // Selene the Moonbound: built once at init (hidden) so she never streams in with a shader-compile hitch
     const sel = mk({ id: 'selene', name: 'Selene the Moonbound', kind: 'companion', poi: 'fen', tags: [], off: [97, -106], yaw: 0 }, heroRig('selene') || seleneFallback());
@@ -978,7 +949,7 @@
       const want = d < 8 ? Math.atan2(dx, dz) : n.home;
       let da = want - n.yawNow; while (da > PI) da -= TAU; while (da < -PI) da += TAU;
       n.yawNow += da * Math.min(1, dt * (d < 8 ? 3 : 1.2)); R.root.rotation.y = n.yawNow;
-      if (n.spr) spriteUpdate(n, dt, c);
+      if (n.spr) { if (n.talkT > 0) n.talkT -= dt; spriteUpdate(n, dt, c, null, d > 6 ? workOf(n) : null); }
       else if (R.hero) { if (R.root.userData.update) R.root.userData.update(dt, time); }
       else if (R.kit) {
         if (n.talkT > 0) n.talkT -= dt;

@@ -560,15 +560,40 @@ vColor.rgb *= mix(vec3(1.0), aTint2, step(1.5, aMask) * step(aMask, 2.5));
     }
     return true;
   }
-  function kitDrop(e) { if (e && e.rig) { CT.humanoid.dispose(e.rig); e.rig = null; } }
+  function kitDrop(e) { if (e && e.rig) { CT.humanoid.dispose(e.rig); e.rig = null; } if (e && e.bb) { CT.billboard.dispose(e.bb); e.bb = null; } }
+  // ── Painted billboards for the road travellers (billboard.js); the humanoid kit and the pools stay as the fallback ──
+  // Behaviour is untouched: walking = a step bob + a lean, the bard's strum = a beat, a knock-down tips the billboard over
+  // and back up (e.downT), lying refugees and the dead lie on their side, toward the side the blow came from.
+  const BBROLE = { merchant: 'merchant', pilgrim: 'pilgrim', bard: 'bard', militia: 'militia', knight: 'knight', woodcutter: 'villager_m', hunter: 'villager_m' };
+  function bbId(e) {
+    if (e.role === 'refugee') { if (e.kseed == null) e.kseed = (rnd() * 3) | 0; return e.kseed % 2 ? 'villager_f' : 'villager_m'; }
+    return BBROLE[e.role] || null;
+  }
+  const bbOn = e => !!(CT.billboard && CT.billboard.has(bbId(e) || ''));
+  function bbDraw(e, cam) {
+    const dx = e.x - cam.x, dz = e.z - cam.z, d2 = dx * dx + dz * dz;
+    if (d2 > 210 * 210) { if (e.bb) e.bb.root.visible = false; return true; }
+    if (!e.bb) {
+      const t = e.tint;
+      try { e.bb = CT.billboard.make(bbId(e), { parent: root, shadow: false, scale: e.s || 1, tint: t ? [0.82 + 0.18 * t[0], 0.82 + 0.18 * t[1], 0.82 + 0.18 * t[2]] : null }); }
+      catch (err) { console.warn('[life] billboard failed', err); return false; }
+    }
+    const bb = e.bb; bb.root.visible = true;
+    const toCam = Math.atan2(cam.x - e.x, cam.z - e.z), rx = Math.cos(toCam), rz = -Math.sin(toCam);
+    const kd = e.killDir, side = kd ? ((kd.x * rx + kd.z * rz) >= 0 ? -1 : 1) : 1;
+    const tip = e.mode === 'lie' ? 1 : e.downT > 0 || e.pitch < -0.05 ? clamp(-e.pitch / 1.35, 0, 1) : 0;
+    const walk = e.spd > 0.2 && !e.dead ? { amt: clamp(e.spd / 3, 0, 1.2), ph: e.a0, vx: Math.sin(e.yaw) * e.spd, vz: Math.cos(e.yaw) * e.spd } : null;
+    CT.billboard.update(bb, cam, e.x, e.y + (e.dead ? 0 : e.lift * 0.3), e.z, e.yaw, KDT, time + e.ph, { walk, work: e.strum > 0 ? 'strum' : null, tip, dead: e.dead ? 1 : 0, side });
+    return true;
+  }
 
   function render() {
     for (const k in POOLS) POOLS[k].n = 0;
     SHP.n = 0; GLP.n = 0;
     const cam = core.camera.position;
     for (let i = 0; i < ENTS.length; i++) {
-      const e = ENTS[i]; if (!e.vis) { if (e.rig) e.rig.root.visible = false; continue; }
-      const kit = e.human && kitOn() && kitDraw(e, cam);
+      const e = ENTS[i]; if (!e.vis) { if (e.rig) e.rig.root.visible = false; if (e.bb) e.bb.root.visible = false; continue; }
+      const kit = e.human && (bbOn(e) ? bbDraw(e, cam) : kitOn() && kitDraw(e, cam));
       const pl = POOLS[e.pool]; if (!kit && (!pl || pl.n >= pl.max)) continue;
       const dx = e.x - cam.x, dz = e.z - cam.z, d2 = dx * dx + dz * dz;
       if (d2 > (kit ? 210 * 210 : pl.view * pl.view)) continue;
@@ -1176,7 +1201,8 @@ vColor.rgb *= mix(vec3(1.0), aTint2, step(1.5, aMask) * step(aMask, 2.5));
   }
   function hurtHuman(e, dmg, dir) {
     if (e.dead) return;
-    if (e.rig && dir) { CT.humanoid.hit(e.rig, dir, 1); e.killDir = { x: dir.x, z: dir.z }; }
+    if (dir) e.killDir = { x: dir.x, z: dir.z };
+    if (e.rig && dir) CT.humanoid.hit(e.rig, dir, 1);
     if (e.protected) {   // important NPCs (traders, quest givers): knocked down, never killed
       if (!(e.downT > 0) && e.mode !== 'lie' && rnd() < 0.4) e.downT = 1.8;
       if (has('gore', 'spray')) CT.gore.spray(new T.Vector3(e.x, e.y + 1.2, e.z), new T.Vector3(dir.x, 0.3, dir.z).normalize(), 0.25);
@@ -2168,6 +2194,8 @@ vColor.rgb *= mix(vec3(1.0), aTint2, step(1.5, aMask) * step(aMask, 2.5));
 
   // ── Debug hooks for tests ──────────────────────────────────────────────────
   api.debug = {
+    humans() { return ENTS.filter(e => e.human && !e.gone); },                       // test hooks (billboard checks)
+    hurt(e, dmg, dir) { hurtHuman(e, dmg || 1, dir || { x: 1, z: 0 }); },
     force(name, o) { if (!core) return null; readPlayer(0); FORCE = o || {}; const ev = startEv(name); FORCE = {}; return ev ? { type: ev.type, x: Math.round(ev.x), z: Math.round(ev.z) } : null; },
     group(kind, near) { const g = spawnGroup(kind, { near: near !== false }); return g ? { kind, x: Math.round(g.members[0].x), z: Math.round(g.members[0].z) } : null; },
     herd(kind, dist) { const d = dist || 25, x = P.x + FX_ * d, z = P.z + FZ_ * d; const h = spawnHerd(kind, x, z); return h ? h.members.length : 0; },

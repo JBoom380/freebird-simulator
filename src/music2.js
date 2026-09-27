@@ -733,6 +733,10 @@ window.CT = window.CT || {};
           if (I[0] === 'voice') arr.push(x.v || (vows ? vows[vi++ % vows.length] : null));
           return arr;
         });
+        if (I[0] === 'pluck') {
+          notes.forEach(n => { const v = /\^/.test(n[3]) ? 1 : 0.75; B.add('pluck', { kind: I[1].kind, m: n[2], v: vb(v) }, at + t0 + n[0] / B.spb, (o.g || 1) * v, o.pan || 0, o.grp || I[2], (B.r() - 0.5) * 0.01); });
+          ph = []; return;
+        }
         const a = Object.assign({}, I[1], o.args, { notes });
         a.seed = hs(inst + JSON.stringify(notes) + (o.seed || ''));
         B.add(I[0], a, at + t0, o.g, o.pan != null ? o.pan : a.mono && a.pc != null ? a.pc : 0, o.grp || I[2], o.each ? (B.r() - 0.5) * 0.006 : (B.r() - 0.5) * 0.012);
@@ -1419,7 +1423,7 @@ window.CT = window.CT || {};
     return b;
   }
   function makeEngine(ctx, dest, offline, low) {
-    const E = { ctx, offline, low: !!low, MEM: low ? 28e6 : 56e6, cur: null, cache: new Map(), bytes: 0, q: [], pend: new Map(), inflight: 0, live: [],
+    const E = { ctx, offline, low: !!low, bad: new Set(), MEM: low ? 28e6 : 56e6, cur: null, cache: new Map(), bytes: 0, q: [], pend: new Map(), inflight: 0, live: [],
       stats: { events: 0, missed: 0, capped: 0, baked: 0, bakeMs: 0, evicted: 0, sections: [] } };
     const G = v => { const g = ctx.createGain(); g.gain.value = v == null ? 1 : v; return g; };
     const BQ = (type, f, q, gain) => { const b = ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; if (gain != null) b.gain.value = gain; return b; };
@@ -1471,7 +1475,7 @@ window.CT = window.CT || {};
         W = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
         W.onmessage = e => {
           const m = e.data, p = E.pend.get(m.key); E.pend.delete(m.key); E.inflight--;
-          if (m.err) console.error('[music2] bake', m.err);
+          if (m.err) { console.error('[music2] bake', m.err); E.bad.add(m.key); }
           else { E.stats.baked++; E.stats.bakeMs += m.ms; E.store(m.key, toBuffer(ctx, { ch: m.ch, sr: m.sr }), p && p.keep); }
           E.kick();
         };
@@ -1583,8 +1587,9 @@ window.CT = window.CT || {};
         while (P.i < s.ev.length && P.st + s.ev[P.i].t < h) {
           const ev = s.ev[P.i], T = P.st + ev.t;
           if (E.only && !E.only(ev)) { P.i++; continue; }
-          if (!E.cache.has(ev.key) && offline) E.bakeNow(ev);
+          if (!E.cache.has(ev.key) && offline) { try { E.bakeNow(ev); } catch (e) { console.error('[music2] bake', ev.k, e); P.i++; continue; } }
           if (!E.cache.has(ev.key)) {
+            if (E.bad.has(ev.key)) { P.i++; continue; }
             if (T > now + 0.15) { E.want(ev, ev.t, false); stalled = true; break; }
             E.stats.missed++; P.i++; continue;
           }
@@ -1595,7 +1600,7 @@ window.CT = window.CT || {};
           const ck = Math.floor(ev.t / CHUNK);
           let b = P.open[ck + ev.grp];
           if (!b) { b = P.open[ck + ev.grp] = { bus: G(1), end: 0, ck }; b.bus.connect(P.grp[ev.grp]); P.buses.push(b.bus); }
-          const dur = E.play(P, ev, T, b.bus);
+          let dur = 0; try { dur = E.play(P, ev, T, b.bus); } catch (e) { console.error('[music2] play', ev.k, e); }
           if (dur) b.end = Math.max(b.end, T + dur);
           // close finished chunk buses: events are sorted, so earlier chunks are complete
           for (const k in P.open) { const x = P.open[k]; if (x.ck < ck) { delete P.open[k]; const bus = x.bus; E.later(() => { try { bus.disconnect(); } catch (e) { } P.buses = P.buses.filter(y => y !== bus); }, (x.end + 1 - ctx.currentTime) * 1000); } }

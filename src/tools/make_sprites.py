@@ -22,27 +22,34 @@ ap.add_argument("--legacy", action="store_true")
 a = ap.parse_args()
 HEROES = ["kaela", "nyx", "vesna", "selene"]
 ANGLES = ["a0", "a35", "a90", "a180"]
+# townsfolk + travellers: 5 painted angles (a45/a90/a135 mirror for the other side = 8 directions), smaller (seen from further)
+FOLK = ["bram", "oldmag", "villager_m", "villager_f", "merchant", "pilgrim", "bard", "militia", "knight"]
+FOLK_ANGLES = ["a0", "a45", "a90", "a135", "a180"]
+ap2 = None
 # dialog portraits used by npcs.js (256x320 WebP); villagers map onto the generic painted townsfolk
 PORTRAITS = ["kaela", "nyx", "vesna", "selene", "bram", "oldmag", "villager_m", "villager_f", "pilgrim", "militia", "merchant"]
 
 # best painted seed per angle (the 3/4 is the one in kaela_sheet.png)
 PICKS = {"kaela": {"a0": "kaela_a0_s11_base", "a35": "kaela_a35_s11", "a90": "kaela_a90_s22", "a180": "kaela_a180_s11"}}
-HEIGHT_M = {"kaela": 1.83, "nyx": 1.83, "vesna": 1.83, "selene": 1.83}   # the heroine sculpts all stand about 1.83 m
+HEIGHT_M = {"kaela": 1.83, "nyx": 1.83, "vesna": 1.83, "selene": 1.83,   # the heroine sculpts all stand about 1.83 m
+            "bram": 1.86, "oldmag": 1.62, "villager_m": 1.78, "villager_f": 1.68, "merchant": 1.76, "pilgrim": 1.78, "bard": 1.76, "militia": 1.82, "knight": 1.9}
+FOLK_HEIGHT_PX = 384
 
 
-def precut(path):
+def precut(path, height=None):
     """A painted frame that is already cut (RGBA): crop to the alpha, anchor at the feet, bleed colours, scale."""
     im = Image.open(path).convert("RGBA"); arr = np.asarray(im).astype(np.float32) / 255
     A = arr[..., 3]; P = arr[..., :3]; M = A > 0.5
     ys, xs = np.where(M)
     y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
-    fy = int(y1 - (y1 - y0) * 0.06); fx = xs[ys >= fy].mean()
+    # feet anchor: median x of the lower 18% (the legs outweigh thin props such as a spear butt on the ground)
+    fy = int(y1 - (y1 - y0) * 0.18); fx = float(np.median(xs[ys >= fy]))
     inner = A > 0.9
     idx = ndimage.distance_transform_edt(~inner, return_distances=False, return_indices=True)
     Pb = P.copy(); Pb[~inner] = P[idx[0], idx[1]][~inner]
     pad = 6
     Y0, X0, Y1, X1 = max(0, y0 - pad), max(0, x0 - pad), min(M.shape[0], y1 + pad), min(M.shape[1], x1 + pad)
-    sc = a.height / (y1 - y0)
+    sc = (height or a.height) / (y1 - y0)
     w, h = max(1, round((X1 - X0) * sc)), max(1, round((Y1 - Y0) * sc))
     rgba = np.dstack([Pb[Y0:Y1, X0:X1], A[Y0:Y1, X0:X1]])
     out = Image.fromarray((np.clip(rgba, 0, 1) * 255).astype(np.uint8), "RGBA").resize((w, h), Image.LANCZOS)
@@ -98,13 +105,13 @@ def webp(im, q):
 
 out = {}
 total = 0
-jobs = PICKS.items() if a.legacy else [(k, {g: None for g in ANGLES}) for k in HEROES]
+jobs = PICKS.items() if a.legacy else [(k, {g: None for g in ANGLES}) for k in HEROES] + [(k, {g: None for g in FOLK_ANGLES}) for k in FOLK]
 for kind, picks in jobs:
     frames = {}
     for key, name in picks.items():
         if a.legacy: im, meta = cut(os.path.join(a.src, "paint", name + ".png"), os.path.join(a.src, "guides", f"{kind}_{key}_sil.png"))
-        else: im, meta = precut(os.path.join(a.art, "sprites", f"{kind}_{key}.png"))
-        b = webp(im, a.quality); total += len(b)
+        else: im, meta = precut(os.path.join(a.art, "sprites", f"{kind}_{key}.png"), FOLK_HEIGHT_PX if kind in FOLK else None)
+        b = webp(im, a.quality if kind not in FOLK else 78); total += len(b)
         meta["src"] = "data:image/webp;base64," + base64.b64encode(b).decode()
         frames[key] = meta
         im.save(os.path.join(os.environ.get("TEMP", "."), f"sprite_{kind}_{key}.png"))
