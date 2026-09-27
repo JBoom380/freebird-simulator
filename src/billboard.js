@@ -74,7 +74,9 @@
     const F = pick(angles, rel, bb.set === setName ? { key: bb.key, mir: bb.mir } : null);
     if (F.key !== bb.key || F.mir !== bb.mir || setName !== bb.set) { if (bb.key && !walking) bb.bob = 1; bb.key = F.key; bb.mir = F.mir; bb.set = setName; }
     const m = frames[bb.key], texs = bb.sets[setName][bb.key];
-    const fi = texs.length > 1 ? Math.floor((t + bb.ph) * (m.fps || 8)) % texs.length : 0;
+    // idle loops cycle while standing; a walker without a walk set holds the first (static) frame + the bob/lean below
+    const hold = !!(o.walk && o.walk.amt > 0.3) && setName === 'idle';
+    const fi = texs.length > 1 && !hold ? Math.floor((t + bb.ph) * (m.fps || 8)) % texs.length : 0;
     if (texs[fi] !== bb.tex) { bb.tex = texs[fi]; bb.mat.map = bb.mat.emissiveMap = bb.tex; }
     const Hw = bb.H / Math.max(0.1, m.bottom - m.top), Ww = Hw * m.w / m.h, tt = t + bb.ph;
     bb.bob = Math.max(0, bb.bob - dt * 3.5);
