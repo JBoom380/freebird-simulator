@@ -216,7 +216,10 @@
     });
     const q = has('rpg', 'activeQuest') ? CT.rpg.activeQuest() : null;
     if (q && q.target) { const dx = q.target.x - px, dz = q.target.z - pz; markers.push({ name: q.title, angle: angleTo(yaw, dx, dz), dist: Math.hypot(dx, dz), kind: 'quest' }); }
-    let prompt = p.prompt || null;
+    // the companion (Selene) while she follows: usually behind the player, so the compass shows where she is
+    const cmpS = CT.npcs && CT.npcs.companion, cst = cmpS && cmpS.state, cnpc = cst && cst.owned && cst.following && cmpS.npc;
+    if (cnpc && cnpc.pos && !(CT.vehicle && CT.vehicle.driving)) { const dx = cnpc.pos.x - px, dz = cnpc.pos.z - pz; markers.push({ name: 'Selene', angle: angleTo(yaw, dx, dz), dist: Math.hypot(dx, dz), kind: 'companion' }); }
+    let prompt = (has('npcs', 'cmdPrompt') && CT.npcs.cmdPrompt()) || p.prompt || null;   // Selene's command mode prompt wins
     if (!prompt && core.state === 'PLAY' && p.pos && has('npcs', 'nearestInteractable')) {
       const n = CT.npcs.nearestInteractable(p.pos, 3.2);
       if (n) prompt = `${isTouch ? 'USE' : 'E'}  Talk to ${n.name}`;
@@ -285,7 +288,7 @@
       else if (inp.map) setState('MAP');
       else if (inp.interact && CT.player && CT.player.pos && has('npcs', 'nearestInteractable')) {
         const n = CT.npcs.nearestInteractable(CT.player.pos, 3.2); if (n) CT.npcs.interact(n);
-        else { const o = CT.interactables.nearest(CT.player.pos); if (o) { try { o.onUse(o); } catch (e) { console.error('[CT.interactables]', e); } } }
+        else if (!(CT.npcs.cmdActive && CT.npcs.cmdActive())) { const o = CT.interactables.nearest(CT.player.pos); if (o) { try { o.onUse(o); } catch (e) { console.error('[CT.interactables]', e); } } }
       }
     }
 

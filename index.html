@@ -96575,7 +96575,7 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
   // ══════════════════════════════════════════════════════════════════════════
   // She follows 3 to 5 m behind and to one side, hangs back in fights (no combat), carries a stash, tosses the player a lit
   // smoke below 50% hp (+30% over 2 s, 20 s cooldown) and revives the player with a beer once per 5 minutes.
-  const COMP = { n: null, vel: new T.Vector3(), pSpeed: 0, fpp: null, moving: false, inCar: false, sideT: 0, walkPh: 0, walkAmt: 0, stuckT: 0, side: -1, healLeft: 0, throwT: -1, idleT: 0, fxT: 7, fxStep: 0,
+  const COMP = { n: null, task: null, bottles: [], vel: new T.Vector3(), pSpeed: 0, fpp: null, moving: false, inCar: false, sideT: 0, walkPh: 0, walkAmt: 0, stuckT: 0, side: -1, healLeft: 0, throwT: -1, idleT: 0, fxT: 7, fxStep: 0,
     banterNext: 0, cool: {}, lastHurtT: -99, still: 0, lastPP: new T.Vector3(), bubble: null, bubbleT: 0, fx: [], proj: null, lastBlood: false, sipT: -1 };
   const comp = () => (CT.rpg && CT.rpg.companion) || null;
   const compOwned = () => { const c = comp(); return !!(c && c.owned); };
@@ -96602,7 +96602,10 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
     const n = COMP.n; if (!n) return;
     if (!n.homePos) placeSeleneHome();
     const c = comp();
-    if (c && c.owned && c.following) compSummonTo(n, false); else if (n.homePos) n.pos.copy(n.homePos);
+    if (c && c.owned && c.following) compSummonTo(n, false);
+    else if (c && c.owned && c.waitAt) n.pos.set(c.waitAt.x, H(c.waitAt.x, c.waitAt.z), c.waitAt.z);
+    else if (n.homePos) n.pos.copy(n.homePos);
+    COMP.task = null; if (typeof CMD !== 'undefined') CMD.active = false;
     n.R.root.visible = !!(c && c.owned);
     COMP.vel.set(0, 0, 0); COMP.healLeft = 0; COMP.throwT = -1; if (COMP.proj) COMP.proj.visible = false;
   };
@@ -96701,7 +96704,9 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
       n.pos.set(v.x, H(v.x, v.z), v.z); fxPoof(n.pos); COMP.vel.set(0, 0, 0); COMP.moving = true;
     }
     if (ride && ride.mode === 'walk') { /* heading for the passenger door */ }
+    else if (st.following && COMP.task) speed = compTask(n, dt, pp, st);
     else if (st.following) speed = compFollow(n, dt, pp);
+    else if (st.waitAt) speed = compWaitHere(n, dt, st, live);
     else {   // waiting at Nyx's hut
       if (n.homePos && n.pos.distanceToSquared(n.homePos) > 0.01) n.pos.copy(n.homePos);
       const want = n.dist < 8 ? Math.atan2(dx0, dz0) : n.home; turnTo(n, want, dt, 3);
@@ -96721,10 +96726,197 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
       if (ud.walk) ud.walk(COMP.walkAmt < 0.03 ? 0 : COMP.walkAmt, COMP.walkPh);
       if (ud.update) ud.update(dt, time);
     }
-    if (st.following && live) { compHeal(n, dt, st); compBanterTick(n, dt, pp); }
+    if (st.following && live) { compHeal(n, dt, st); compBanterTick(n, dt, pp); compAutoFight(n, dt, pp); }
+    if ((st.following || st.waitAt) && live) compDoorway(n, pp, dt);
+    if (live) cmdTick(dt);
     compIdleFx(n, dt, speed);
-    fxTick(dt); bubbleTick(n, dt);
+    fxTick(dt); bubbleTick(n, dt); bottlesTick(dt);
   }
+  // ── Follower commands (the Skyrim-follower feel: Lydia, in Selene's own voice) ─────────────────────────────────
+  // "Wait here" / "Follow me" (after 10 real minutes of waiting she heads home to Nyx's hut); "I need you to do something"
+  // (the dialog, or hold E for 0.6 s): aim, then press E/USE to confirm: a lootable -> "Loot that" (into HER stash), a
+  // monster -> "Take them down" (flaming beer bottles, attributed {source:'npc'}), the ground -> "Wait there".
+  // In fights she also lobs a bottle now and then on her own. The command cancels when its target is gone.
+  const WAIT_LIMIT = 600;   // seconds (10 in-game minutes would be under 7 real seconds at a 16-minute day)
+  const CMD = { active: false, t0: 0, target: null, eDown: null };
+  const LOOTABLE = /search|loot|chest|open|take|corpse|fallen/i;
+  const _cd = new T.Vector3(), _co = new T.Vector3();
+  npcs.companionCommand = function () {
+    if (!compFollowing() || !COMP.n) return false;
+    CMD.active = true; CMD.t0 = time; CMD.target = null; COMP.task = null;
+    speak('What do you need?', true);
+    return true;
+  };
+  npcs.cmdActive = () => CMD.active;
+  npcs.cmdPrompt = () => (CMD.active ? `${core && core.isTouch ? 'USE' : 'E'}  Selene: ${CMD.target ? CMD.target.label : 'Aim at something'}` : null);
+  function cmdScan() {
+    const cam = core.camera; cam.getWorldDirection(_cd); _co.copy(cam.position);
+    let best = null, ba = 1e9;
+    if (CT.monsters && CT.monsters.list) for (const m of CT.monsters.list) {
+      if (!m || !m.alive || m.dead || !m.pos) continue;
+      const vx = m.pos.x - _co.x, vy = m.pos.y + 1.0 * (m.scale || 1) - _co.y, vz = m.pos.z - _co.z, d = Math.hypot(vx, vy, vz); if (d > 45 || d < 0.5) continue;
+      const ang = Math.acos(clamp((vx * _cd.x + vy * _cd.y + vz * _cd.z) / d, -1, 1));
+      if (ang < Math.max(0.06, Math.atan(1.3 * (m.scale || 1) / d)) && ang < ba) { ba = ang; best = { type: 'attack', m, label: 'Take them down' }; }
+    }
+    if (!best && CT.interactables) for (const o of CT.interactables.list) {
+      if (!o || o.disabled || !LOOTABLE.test(o.label || '')) continue;
+      const vx = o.x - _co.x, vy = H(o.x, o.z) + 0.4 - _co.y, vz = o.z - _co.z, d = Math.hypot(vx, vy, vz); if (d > 35) continue;
+      const ang = Math.acos(clamp((vx * _cd.x + vy * _cd.y + vz * _cd.z) / d, -1, 1));
+      if (ang < Math.max(0.07, Math.atan(1.0 / d)) && ang < ba) { ba = ang; best = { type: 'loot', o, label: 'Loot that' }; }
+    }
+    if (!best) {
+      let p = null;
+      if (CT.world && CT.world.raycast) { const r = CT.world.raycast(_co, _cd, 60); if (r && r.point) p = r.point; }
+      if (!p && _cd.y < -0.02) { const tt = (H(_co.x, _co.z) - _co.y) / _cd.y; if (tt > 0 && tt < 60) p = _co.clone().addScaledVector(_cd, tt); }
+      if (p) best = { type: 'wait', x: p.x, z: p.z, label: 'Wait there' };
+    }
+    return best;
+  }
+  function cmdTick(dt) {
+    if (!CMD.active) return;
+    if (!compFollowing() || core.state !== 'PLAY' || time - CMD.t0 > 14) { CMD.active = false; return; }
+    CMD.target = cmdScan();
+    const I = core.input;
+    if (I && I.interact && time - CMD.t0 > 0.25) {
+      CMD.active = false;
+      const t = CMD.target;
+      if (!t) { speak('Never mind, then.', true); return; }
+      COMP.task = Object.assign({ t: 0, n: 0, next: 0 }, t);
+      speak(t.type === 'loot' ? 'Fine. I\'ll dig through it.' : t.type === 'attack' ? 'With pleasure. Hold my beer. Actually, no.' : 'Over there? Sure. Why not.', true);
+    }
+  }
+  if (typeof window !== 'undefined') {
+    // hold E for 0.6 s: command mode. The same press may already have opened her dialog (she follows within talking
+    // range): then the dialog closes and the command mode opens instead.
+    window.addEventListener('keydown', e => {
+      if (e.code !== 'KeyE' || e.repeat || CMD.active) return;
+      const t0 = CMD.eDown = performance.now();
+      setTimeout(() => {
+        if (CMD.eDown !== t0 || !core || !compFollowing()) return;
+        CMD.eDown = null;
+        const S_ = CT.debug && CT.debug.S;
+        if (core.state === 'DIALOG' && S_ && S_.dialogNpc === COMP.n) { COMP.n._view = null; S_.dialogNpc = null; CT.debug.state('PLAY'); }
+        if (core.state === 'PLAY') npcs.companionCommand();
+      }, 620);
+    });
+    window.addEventListener('keyup', e => { if (e.code === 'KeyE') CMD.eDown = null; });
+  }
+  // walk or run to a point (collision, stuck detection); returns her speed
+  function compGoTo(n, dt, x, z, run) {
+    const dx = x - n.pos.x, dz = z - n.pos.z, d = Math.hypot(dx, dz);
+    if (d < 0.3) { COMP.vel.multiplyScalar(Math.max(0, 1 - dt * 10)); return 0; }
+    const sp = Math.min(run ? 6.2 : 3.6, 1.2 + d * 2);
+    COMP.vel.lerp(_v.set(dx / d * sp, 0, dz / d * sp), Math.min(1, dt * 6));
+    const ox = n.pos.x, oz = n.pos.z;
+    n.pos.x += COMP.vel.x * dt; n.pos.z += COMP.vel.z * dt;
+    if (CT.world && CT.world.collide) { _w.set(n.pos.x, 0, n.pos.z); const r = CT.world.collide(_w, 0.4); if (r) { n.pos.x = r.x; n.pos.z = r.z; } }
+    const moved = dt > 0 ? Math.hypot(n.pos.x - ox, n.pos.z - oz) / dt : 0;
+    if (moved > 0.4) turnTo(n, Math.atan2(COMP.vel.x, COMP.vel.z), dt, 8);
+    if (sp > 1.5 && moved < sp * 0.2) COMP.stuckT += dt; else COMP.stuckT = Math.max(0, COMP.stuckT - dt * 2);
+    return moved;
+  }
+  function taskDone(line) { COMP.task = null; if (line) speak(line, true); }
+  function compTask(n, dt, pp, st) {
+    const k = COMP.task; k.t += dt;
+    if (k.t > 45 || COMP.stuckT > 5) { COMP.stuckT = 0; return taskDone('I give up. It\'s not worth it.'), 0; }
+    if (k.type === 'loot') {
+      const o = k.o;
+      if (!o || o.disabled || !(CT.interactables && CT.interactables.list.includes(o))) return taskDone('Somebody got there first.'), 0;
+      const d = Math.hypot(o.x - n.pos.x, o.z - n.pos.z);
+      if (d > 1.2) return compGoTo(n, dt, o.x, o.z, true);
+      const R = RPG(); if (R) R._stashRedirect = true;
+      try { o.onUse(o); } catch (e) { console.error('[npcs] companion loot', e); } finally { if (R) R._stashRedirect = false; }
+      taskDone('Mine now. Well, yours. Technically.'); return 0;
+    }
+    if (k.type === 'attack') {
+      const m = k.m;
+      if (!m || !m.alive || m.dead || !(CT.monsters && CT.monsters.list.includes(m))) return taskDone(k.n ? 'Well. That\'s handled.' : 'It\'s gone.'), 0;
+      const d = Math.hypot(m.pos.x - n.pos.x, m.pos.z - n.pos.z);
+      if (d > 16) return compGoTo(n, dt, m.pos.x, m.pos.z, true);
+      COMP.vel.multiplyScalar(Math.max(0, 1 - dt * 8)); turnTo(n, Math.atan2(m.pos.x - n.pos.x, m.pos.z - n.pos.z), dt, 6);
+      if (time > k.next) { throwBottle(n, m); k.n++; k.next = time + 2.2; if (k.n >= 4) taskDone(null); }
+      return 0;
+    }
+    if (k.type === 'wait') {
+      if (Math.hypot(k.x - n.pos.x, k.z - n.pos.z) > 0.5) return compGoTo(n, dt, k.x, k.z, true);
+      st.following = false; st.waitAt = { x: n.pos.x, z: n.pos.z }; st.waitT = 0;
+      bus.emit('companion', { id: 'selene', following: false, waiting: true });
+      taskDone('Sure. I\'ll just stand here. Smoking. Looking tragic.'); return 0;
+    }
+    COMP.task = null; return 0;
+  }
+  // waiting at a spot ("Wait here" / "Wait there"); bored after WAIT_LIMIT, she walks off toward Nyx's hut
+  function compWaitHere(n, dt, st, live) {
+    if (live) st.waitT = (st.waitT || 0) + dt;
+    if (st.waitT > WAIT_LIMIT) {
+      if (!COMP.homeward) { COMP.homeward = { t: 0 }; bus.emit('notify', { text: 'Selene got tired of waiting and set off for Nyx\'s hut.', kind: 'info' }); }
+      COMP.homeward.t += dt;
+      if (!n.homePos) placeSeleneHome();
+      const sp = compGoTo(n, dt, n.homePos.x, n.homePos.z, false);
+      if (COMP.homeward.t > 20 || Math.hypot(n.pos.x - n.homePos.x, n.pos.z - n.homePos.z) < 1) { st.waitAt = null; st.waitT = 0; COMP.homeward = null; n.pos.copy(n.homePos); COMP.vel.set(0, 0, 0); }
+      return sp;
+    }
+    const w = st.waitAt;
+    if (Math.hypot(w.x - n.pos.x, w.z - n.pos.z) > 0.4) return compGoTo(n, dt, w.x, w.z, false);
+    COMP.vel.set(0, 0, 0);
+    const dxp = CT.player && CT.player.pos ? CT.player.pos.x - n.pos.x : 0, dzp = CT.player && CT.player.pos ? CT.player.pos.z - n.pos.z : 0;
+    if (Math.hypot(dxp, dzp) < 10) turnTo(n, Math.atan2(dxp, dzp), dt, 3);
+    return 0;
+  }
+  // flaming beer bottles
+  function throwBottle(n, m) {
+    const g = new T.Group();
+    const b = new T.Mesh(G.geo.cyl, basic('#5a3410')); b.scale.set(0.035, 0.2, 0.035); g.add(b);
+    const f = new T.Mesh(G.geo.sph, basic('#ff8a20', 0.9, true)); f.scale.setScalar(0.09); f.position.y = 0.14; g.add(f);
+    group.add(g);
+    const from = n.R.root.localToWorld(new T.Vector3(...SEL_L.hand));
+    COMP.bottles.push({ g, f, from, m, to: new T.Vector3(m.pos.x, m.pos.y + 1.0 * (m.scale || 1), m.pos.z), t: 0, T: 0.75 });
+    if (CT.audio && CT.audio.sfx) CT.audio.sfx('swing', { pos: from });
+  }
+  function bottlesTick(dt) {
+    for (let i = COMP.bottles.length - 1; i >= 0; i--) {
+      const B = COMP.bottles[i]; B.t += dt;
+      if (B.m && B.m.alive && B.m.pos) B.to.set(B.m.pos.x, B.m.pos.y + 1.0 * (B.m.scale || 1), B.m.pos.z);   // homes in a little
+      const k = Math.min(1, B.t / B.T);
+      B.g.position.lerpVectors(B.from, B.to, k); B.g.position.y += Math.sin(k * PI) * 2.2; B.g.rotation.set(B.t * 12, 0, B.t * 7);
+      B.f.scale.setScalar(0.09 * (1 + Math.sin(B.t * 40) * 0.25));
+      if (k < 1) continue;
+      group.remove(B.g); COMP.bottles.splice(i, 1);
+      const p = B.to.clone();
+      for (let j = 0; j < 12; j++) { const e = fxGet(); if (!e) break; const a = j / 12 * TAU; Object.assign(e, { life: 0.8, max: 0.8, delay: 0, kind: 'poof', v: new T.Vector3(Math.sin(a) * 1.6, 1 + (j % 3) * 0.6, Math.cos(a) * 1.6), s0: 0.1 }); e.m.position.copy(p); e.m.material.color.set(j % 2 ? 0xff7a1a : 0xffd040); }
+      if (B.m && B.m.alive && !B.m.dead && CT.monsters && CT.monsters.damage) {
+        const dir = new T.Vector3(p.x - B.from.x, 0, p.z - B.from.z).normalize();
+        try { CT.monsters.damage(B.m, 28, dir, 'torso', false, { source: 'npc' }); } catch (e) { console.error('[npcs] bottle', e); }
+      }
+      if (CT.audio && CT.audio.sfx) CT.audio.sfx('flesh', { pos: p });
+    }
+  }
+  // fights beside you: an unprompted bottle at a monster that is on the player, every 8 to 11 s
+  function compAutoFight(n, dt, pp) {
+    if (COMP.task || !(CT.monsters && CT.monsters.inCombat) || time < (COMP.autoNext || 0)) return;
+    let best = null, bd = 14;
+    for (const m of CT.monsters.list) { if (!m || !m.alive || m.dead || !m.aggro) continue; const d = Math.hypot(m.pos.x - pp.x, m.pos.z - pp.z); if (d < bd) { bd = d; best = m; } }
+    if (!best || Math.hypot(best.pos.x - n.pos.x, best.pos.z - n.pos.z) > 24) return;
+    COMP.autoNext = time + 8 + ((hash('a' + Math.floor(time)) % 30) / 10);
+    throwBottle(n, best);
+    if (Math.random() < 0.35) speak(['Duck.', 'Catch!', 'Here, have a hot one.', 'Last call!'][(COMP.bi = (COMP.bi || 0) + 1) % 4], true);
+  }
+  // the doorway gag: when the player walks into her (1 in 20 approaches)
+  function compDoorway(n, pp, dt) {
+    COMP.ddt = dt;
+    const P = CT.player; if (!P) return;
+    const { fx, fz } = playerFrame(), dx = n.pos.x - pp.x, dz = n.pos.z - pp.z, d = Math.hypot(dx, dz);
+    if (!COMP.dpp) COMP.dpp = pp.clone();
+    const ps = Math.hypot(pp.x - COMP.dpp.x, pp.z - COMP.dpp.z) / Math.max(1e-3, COMP.ddt || 0.016); COMP.dpp.copy(pp);
+    const blocking = d < 3.2 && (dx * fx + dz * fz) / (d || 1) > 0.5 && ps > 1;   // she sidesteps at about 2.7 m, so the bump reads a little early
+    if (blocking && !COMP.blocking && time > (COMP.doorNext || 0) && Math.random() < 0.05) { COMP.doorNext = time + 90; speak('Oh, am I in your way?', true); }
+    COMP.blocking = blocking;
+  }
+  bus.on('stash', d => {
+    const c = comp(); if (!c || !d || d.dir !== 'give') return;
+    const tot = c.stash.reduce((s, e) => s + e.count, 0);
+    if (tot >= 20 && time > (COMP.heavyNext || 0)) { COMP.heavyNext = time + 120; speak('My back has opinions about this.', true); }
+  });
   function compWalkTo(n, dt, x, z) {   // Iron Stallion: a straight walk to the passenger door
     const dx = x - n.pos.x, dz = z - n.pos.z, d = Math.hypot(dx, dz); if (d < 0.05) { COMP.vel.set(0, 0, 0); return 0; }
     const sp = Math.min(3.8, d * 3), k = Math.min(d, sp * dt) / d;
@@ -96732,11 +96924,11 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
     return sp;
   }
   function turnTo(n, want, dt, k) { let da = want - n.yawNow; while (da > PI) da -= TAU; while (da < -PI) da += TAU; n.yawNow += da * Math.min(1, dt * k); }
-  // Follow IN VIEW: her slot is 5 m out at 35 degrees left of the view (the left third of the screen, clear of the
-  // crosshair); mirrored right when the left is blocked. Combat (a monster within 15 m): 7 m out on the side away from
-  // the nearest monster. A 1.5 m dead zone keeps her still while the player idles or backs up; she arcs around the player
+  // Follow BEHIND (close, like a sworn housecarl): her slot is 3 m behind the player, 25 degrees off the reverse view direction (behind-left; mirrored
+  // behind-right when the left is blocked). Combat (a monster within 15 m): she hangs back 7 m, on the side away from the
+  // nearest monster. The compass shows her bearing (game.js marker kind 'companion'). A 1.5 m dead zone keeps her still while the player idles or backs up; she arcs around the player
   // (never through) when the view swings; she matches the player's pace and briefly outruns it to regain her slot.
-  const SLOT = { ang: 32 * PI / 180, dist: 5, cAng: 42 * PI / 180, cDist: 7 };
+  const SLOT = { ang: PI - 25 * PI / 180, dist: 3.0, cAng: PI - 35 * PI / 180, cDist: 7 };   // angles from the view direction
   function slotAt(pp, fx, fz, rx, rz, side, ang, dist) {
     const c = Math.cos(ang), s = Math.sin(ang) * side;
     return new T.Vector3(pp.x + (fx * c + rx * s) * dist, 0, pp.z + (fz * c + rz * s) * dist);
@@ -96750,9 +96942,9 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
   function compFollow(n, dt, pp) {
     const { fx, fz, rx, rz } = playerFrame();
     const dxp = n.pos.x - pp.x, dzp = n.pos.z - pp.z, dp = Math.hypot(dxp, dzp);
-    // teleport only when far away: to the front-left edge of the view, just outside the frame, in a puff of smoke
+    // teleport only when far away or stuck: to her behind spot (out of view), in a puff of smoke
     if (dp > 60 || COMP.stuckT > 4) {
-      const v = slotAt(pp, fx, fz, rx, rz, COMP.side, 58 * PI / 180, 7);
+      const v = slotAt(pp, fx, fz, rx, rz, COMP.side, SLOT.ang, 4);
       if (CT.world && CT.world.collide) { const r = CT.world.collide(_w.set(v.x, 0, v.z), 0.45); if (r) v.set(r.x, 0, r.z); }
       fxPoof(n.pos); n.pos.set(v.x, H(v.x, v.z), v.z); fxPoof(n.pos);
       COMP.vel.set(0, 0, 0); COMP.stuckT = 0; COMP.moving = true; return 0;
@@ -96775,7 +96967,7 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
       if (ok) { COMP.pv.x += (vx - COMP.pv.x) * Math.min(1, dt * 5); COMP.pv.z += (vz - COMP.pv.z) * Math.min(1, dt * 5); } } else if (!COMP.fpp) COMP.fpp = new T.Vector3();
     COMP.fpp.copy(pp); COMP.pSpeed = Math.hypot(COMP.pv.x, COMP.pv.z);
     const tgt = slotAt(pp, fx, fz, rx, rz, COMP.side, combat ? SLOT.cAng : SLOT.ang, combat ? SLOT.cDist : SLOT.dist);
-    tgt.x += COMP.pv.x * 0.55; tgt.z += COMP.pv.z * 0.55;
+    tgt.x += COMP.pv.x * 0.2; tgt.z += COMP.pv.z * 0.2;   // a small lead so she keeps pace without drawing level
     const dx = tgt.x - n.pos.x, dz = tgt.z - n.pos.z, d = Math.hypot(dx, dz);
     // dead zone only while the player is still: start beyond 1.5 m from the slot, stop within 0.4 m
     const pMoving = COMP.pSpeed > 1.0;
@@ -97093,7 +97285,7 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
 
   // ── Interaction ────────────────────────────────────────────────────────────
   npcs.nearestInteractable = function (pos, maxDist) {
-    if (!pos) return null;
+    if (!pos || (typeof CMD !== 'undefined' && CMD.active)) return null;
     let best = null, bd = maxDist || 3.2;
     npcs.list.forEach(n => { if (n.kind === 'companion' && (!compOwned() || COMP.inCar)) return; const d = Math.hypot(pos.x - n.pos.x, pos.z - n.pos.z); if (d < bd && Math.abs((pos.y || n.pos.y) - n.pos.y) < 4) { bd = d; best = n; } });
     return best;
@@ -97373,20 +97565,28 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
         [ch('ok', 'Good to have you, Selene.', 'root', () => { F().seleneMet = true; }), ch('why', 'The moon sent me a bodyguard with a beer?', 'why', () => { F().seleneMet = true; })]),
       why: () => node(['The moon has taste.', 'And I am not a bodyguard. I am the one who drags you home when you forget to duck.'], [ch('back', 'Fair enough.', 'root')]),
       root: () => {
-        const c = comp() || {}, f = !!c.following;
+        const c = comp() || {}, f = !!c.following, w = !f && !!c.waitAt;
         const L = f ? (ms() >= 6 ? ['The Bone King is dust and I am out of excuses to drink. Just kidding. I never needed excuses.']
             : c.beers <= 1 ? ['We are nearly dry. One beer between us and a slow death.', 'Nyx\'s hut, or Old Mag\'s. Soon.']
-            : ['Lead on. I will be three steps behind, judging your footwork.', `Smokes: ${c.smokes}. Beers: ${c.beers}. Enough to get us both killed slowly.`])
+            : ['Right behind you. Always am. Mostly out of spite.', `Smokes: ${c.smokes}. Beers: ${c.beers}. Enough to get us both killed slowly.`])
+          : w ? ['Still standing here. Still smoking. Still tragic.', 'You back for me, or just admiring the view?']
           : ['Back for me? I knew you would miss the smell of smoke.', 'Say the word and I walk with you.'];
-        const cs = f ? [ch('give', 'Carry these for me.', 'give'), ch('take', 'Hand me my things.', 'take'), ch('supply', 'How are we on smokes and beer?', 'supply'), ch('wait', 'Wait for me at Nyx\'s hut.', 'waiting', () => { npcs.companionDismiss(); })]
-          : [ch('follow', 'Walk with me.', 'following', () => { const cc = comp(); if (cc) { cc.following = true; bus.emit('companion', { id: 'selene', following: true }); } }), ch('take', 'Hand me my things.', 'take'), ch('supply', 'How are we on smokes and beer?', 'supply')];
+        const follow = ch('follow', 'Follow me.', 'following', () => { const cc = comp(); if (cc) { cc.following = true; cc.waitAt = null; cc.waitT = 0; bus.emit('companion', { id: 'selene', following: true }); } });
+        const cs = f ? [ch('trade', 'Let\'s trade.', 'trade'),
+            ch('waithere', 'Wait here.', 'waitingHere', () => { const cc = comp(), n = COMP.n; if (cc && n) { cc.following = false; cc.waitAt = { x: n.pos.x, z: n.pos.z }; cc.waitT = 0; COMP.task = null; bus.emit('companion', { id: 'selene', following: false, waiting: true }); } }),
+            ch('command', 'I need you to do something.', null, () => { npcs.companionCommand(); }),
+            ch('wait', 'Go wait for me at Nyx\'s hut.', 'waiting', () => { npcs.companionDismiss(); })]
+          : [follow, ch('trade', 'Let\'s trade.', 'trade')];
         return node(L, cs.concat([bye()]));
       },
-      give: () => { const l = stashList(true); return node([l.length ? 'Hand it over. I will try not to sell it.' : 'You have nothing I can carry. Your sword stays with you. Obviously.'], l.concat([ch('back', 'That is all.', 'root')])); },
+      trade: () => { const c = comp() || {}; return node(['What do you need? I have your junk, my smokes, and a deep sense of regret.'],
+        [ch('give', 'Carry these for me.', 'give'), ch('take', 'Hand me my things.', 'take'), ch('supply', 'How are we on smokes and beer?', 'supply'), ch('back', 'Back.', 'root')]); },
+      waitingHere: () => node(['Sure. I\'ll just stand here. Smoking. Looking tragic.'], [bye('Won\'t be long.')]),
+      give: () => { const l = stashList(true); return node([l.length ? 'Sworn to haul your junk. Lucky me.' : 'You have nothing I can carry. Your sword stays with you. Obviously.'], l.concat([ch('back', 'That is all.', 'root')])); },
       take: () => { const l = stashList(false); return node([l.length ? 'Your things. Mostly unharmed.' : 'I am carrying nothing of yours. Just my smokes, and those are mine.'], l.concat([ch('back', 'That is all.', 'root')])); },
       supply: () => { const c = comp() || {}; return node([`Smokes: ${c.smokes}. Beers: ${c.beers}.`, c.beers > 0 ? 'One cold one is always saved for you. For when you die. You will.' : 'No beer left. So please do not die.'], [ch('back', 'Good to know.', 'root'), bye()]); },
       waiting: () => node(['Fine. I will be at the witch\'s hut, drinking her out of house and home.', 'Come find me when you miss me. You will.'], [bye('Stay out of trouble.')]),
-      following: () => node(['About time. Try to keep up.'], [bye('Let us go.')]),
+      following: () => node(['Right behind you. Always am.'], [bye('Let us go.')]),
     },
   };
   // Nyx sells the Moon Pact once you have met her; she re-summons and restocks Selene for free.
@@ -97874,6 +98074,11 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
   rpg.has = (id, n) => rpg.count(id) >= (n || 1);
   rpg.give = function (id, count) {
     const n = count == null ? 1 : count | 0; if (!I[id] || n <= 0) return false;
+    // Selene's "Loot that" command: the loot goes into HER stash (gold still goes to the player's purse)
+    if (rpg._stashRedirect && id !== 'gold' && rpg.companion && rpg.companion.owned) {
+      const e = rpg.companion.stash.find(e => e.id === id); if (e) e.count += n; else rpg.companion.stash.push({ id, count: n });
+      bus.emit('stash', { id, count: n, dir: 'give', by: 'selene' }); return true;
+    }
     if (id === 'gold') rpg.stats.gold += n;
     else { const e = rpg.inventory.find(e => e.id === id); if (e) e.count += n; else rpg.inventory.push({ id, count: n }); }
     if (id === 'pelt') refreshSmith();
@@ -102780,6 +102985,13 @@ window.CT = window.CT || {};
     let facing = null;
     mk_.forEach(m => {
       if (m.angle == null) return;
+      if (m.kind === 'companion') {   // Selene: a small heart at her bearing, pinned to the strip edge (with a pointer) when she is behind
+        const ad2 = Math.abs(m.angle), dc = clamp(m.angle, -HALF * 0.97, HALF * 0.97), xc = CP.x + dc * sc;
+        g.globalAlpha = 1; g.save(); g.translate(xc, cy); g.beginPath(); g.moveTo(0, 8); g.bezierCurveTo(-13, -1, -7, -12, 0, -5); g.bezierCurveTo(7, -12, 13, -1, 0, 8); g.closePath();
+        g.fillStyle = '#e8506a'; g.fill(); g.lineWidth = 2; g.strokeStyle = '#1a0406'; g.stroke(); g.restore();
+        if (ad2 > HALF) { const s2 = Math.sign(m.angle); pointer(g, xc + s2 * 18, cy, -s2); }
+        return;
+      }
       const q = m.kind === 'quest', ad = Math.abs(m.angle);
       if (ad > HALF && !q) return;
       const d = clamp(m.angle, -HALF * 0.97, HALF * 0.97), x = CP.x + d * sc;
@@ -102805,6 +103017,14 @@ window.CT = window.CT || {};
     g.save(); g.translate(x0 + 34, y0 + 22); g.rotate(Math.PI / 4); g.fillStyle = '#f0c050'; g.fillRect(-5, -5, 10, 10); g.strokeStyle = '#140802'; g.lineWidth = 2; g.strokeRect(-5, -5, 10, 10); g.restore();
     txt(g, q.title.toUpperCase(), x - 14, y0 + 22, 16, '#f0c878', { align: 'right', sp: 2, lw: 3 });
     lines.forEach((l, i) => txt(g, l, x - 14, y0 + 46 + i * 21, 16, '#e0d0b0', { align: 'right', italic: true, weight: 'normal', lw: 3 }));
+  }
+  // Selene's command mode (npcs.js): a pulsing ring around the crosshair while the player aims an order
+  function drawCmdReticle(g, t) {
+    if (!(CT.npcs && typeof CT.npcs.cmdActive === 'function' && CT.npcs.cmdActive())) return;
+    const r = 26 + Math.sin(t * 6) * 3;
+    g.save(); g.lineWidth = 3; g.strokeStyle = 'rgba(232,80,106,0.9)'; g.beginPath(); g.arc(640, 360, r, 0, Math.PI * 2); g.stroke();
+    for (let k = 0; k < 4; k++) { const a = k * Math.PI / 2 + Math.PI / 4; g.beginPath(); g.moveTo(640 + Math.cos(a) * (r + 4), 360 + Math.sin(a) * (r + 4)); g.lineTo(640 + Math.cos(a) * (r + 12), 360 + Math.sin(a) * (r + 12)); g.stroke(); }
+    g.restore();
   }
   function drawPrompt(g, t, v) {
     if (!v.prompt) return;
@@ -103408,7 +103628,7 @@ window.CT = window.CT || {};
       case 'GATE': drawGate(g, t, v, dt); break;
       case 'TITLE': drawTitle(g, t, v, dt); break;
       case 'PLAY':
-        drawHurt(g, t, v); if (!carOn()) drawCross(g, t); drawCompass(g, t, v); drawQuest(g, t, v); drawBars(g, t, v, dt); drawBoss(g, t, v, dt); drawPrompt(g, t, v); drawNotes(g, t, v);
+        drawHurt(g, t, v); if (!carOn()) drawCross(g, t); drawCmdReticle(g, t); drawCompass(g, t, v); drawQuest(g, t, v); drawBars(g, t, v, dt); drawBoss(g, t, v, dt); drawPrompt(g, t, v); drawNotes(g, t, v);
         if (carOn()) drawCarGauge(g, t, v);
         if (!MB.done) mapStep(0.6);
         break;
@@ -103750,7 +103970,10 @@ window.CT = window.CT || {};
     });
     const q = has('rpg', 'activeQuest') ? CT.rpg.activeQuest() : null;
     if (q && q.target) { const dx = q.target.x - px, dz = q.target.z - pz; markers.push({ name: q.title, angle: angleTo(yaw, dx, dz), dist: Math.hypot(dx, dz), kind: 'quest' }); }
-    let prompt = p.prompt || null;
+    // the companion (Selene) while she follows: usually behind the player, so the compass shows where she is
+    const cmpS = CT.npcs && CT.npcs.companion, cst = cmpS && cmpS.state, cnpc = cst && cst.owned && cst.following && cmpS.npc;
+    if (cnpc && cnpc.pos && !(CT.vehicle && CT.vehicle.driving)) { const dx = cnpc.pos.x - px, dz = cnpc.pos.z - pz; markers.push({ name: 'Selene', angle: angleTo(yaw, dx, dz), dist: Math.hypot(dx, dz), kind: 'companion' }); }
+    let prompt = (has('npcs', 'cmdPrompt') && CT.npcs.cmdPrompt()) || p.prompt || null;   // Selene's command mode prompt wins
     if (!prompt && core.state === 'PLAY' && p.pos && has('npcs', 'nearestInteractable')) {
       const n = CT.npcs.nearestInteractable(p.pos, 3.2);
       if (n) prompt = `${isTouch ? 'USE' : 'E'}  Talk to ${n.name}`;
@@ -103819,7 +104042,7 @@ window.CT = window.CT || {};
       else if (inp.map) setState('MAP');
       else if (inp.interact && CT.player && CT.player.pos && has('npcs', 'nearestInteractable')) {
         const n = CT.npcs.nearestInteractable(CT.player.pos, 3.2); if (n) CT.npcs.interact(n);
-        else { const o = CT.interactables.nearest(CT.player.pos); if (o) { try { o.onUse(o); } catch (e) { console.error('[CT.interactables]', e); } } }
+        else if (!(CT.npcs.cmdActive && CT.npcs.cmdActive())) { const o = CT.interactables.nearest(CT.player.pos); if (o) { try { o.onUse(o); } catch (e) { console.error('[CT.interactables]', e); } } }
       }
     }
 

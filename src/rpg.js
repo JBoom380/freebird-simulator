@@ -54,6 +54,11 @@
   rpg.has = (id, n) => rpg.count(id) >= (n || 1);
   rpg.give = function (id, count) {
     const n = count == null ? 1 : count | 0; if (!I[id] || n <= 0) return false;
+    // Selene's "Loot that" command: the loot goes into HER stash (gold still goes to the player's purse)
+    if (rpg._stashRedirect && id !== 'gold' && rpg.companion && rpg.companion.owned) {
+      const e = rpg.companion.stash.find(e => e.id === id); if (e) e.count += n; else rpg.companion.stash.push({ id, count: n });
+      bus.emit('stash', { id, count: n, dir: 'give', by: 'selene' }); return true;
+    }
     if (id === 'gold') rpg.stats.gold += n;
     else { const e = rpg.inventory.find(e => e.id === id); if (e) e.count += n; else rpg.inventory.push({ id, count: n }); }
     if (id === 'pelt') refreshSmith();

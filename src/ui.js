@@ -771,6 +771,13 @@ window.CT = window.CT || {};
     let facing = null;
     mk_.forEach(m => {
       if (m.angle == null) return;
+      if (m.kind === 'companion') {   // Selene: a small heart at her bearing, pinned to the strip edge (with a pointer) when she is behind
+        const ad2 = Math.abs(m.angle), dc = clamp(m.angle, -HALF * 0.97, HALF * 0.97), xc = CP.x + dc * sc;
+        g.globalAlpha = 1; g.save(); g.translate(xc, cy); g.beginPath(); g.moveTo(0, 8); g.bezierCurveTo(-13, -1, -7, -12, 0, -5); g.bezierCurveTo(7, -12, 13, -1, 0, 8); g.closePath();
+        g.fillStyle = '#e8506a'; g.fill(); g.lineWidth = 2; g.strokeStyle = '#1a0406'; g.stroke(); g.restore();
+        if (ad2 > HALF) { const s2 = Math.sign(m.angle); pointer(g, xc + s2 * 18, cy, -s2); }
+        return;
+      }
       const q = m.kind === 'quest', ad = Math.abs(m.angle);
       if (ad > HALF && !q) return;
       const d = clamp(m.angle, -HALF * 0.97, HALF * 0.97), x = CP.x + d * sc;
@@ -796,6 +803,14 @@ window.CT = window.CT || {};
     g.save(); g.translate(x0 + 34, y0 + 22); g.rotate(Math.PI / 4); g.fillStyle = '#f0c050'; g.fillRect(-5, -5, 10, 10); g.strokeStyle = '#140802'; g.lineWidth = 2; g.strokeRect(-5, -5, 10, 10); g.restore();
     txt(g, q.title.toUpperCase(), x - 14, y0 + 22, 16, '#f0c878', { align: 'right', sp: 2, lw: 3 });
     lines.forEach((l, i) => txt(g, l, x - 14, y0 + 46 + i * 21, 16, '#e0d0b0', { align: 'right', italic: true, weight: 'normal', lw: 3 }));
+  }
+  // Selene's command mode (npcs.js): a pulsing ring around the crosshair while the player aims an order
+  function drawCmdReticle(g, t) {
+    if (!(CT.npcs && typeof CT.npcs.cmdActive === 'function' && CT.npcs.cmdActive())) return;
+    const r = 26 + Math.sin(t * 6) * 3;
+    g.save(); g.lineWidth = 3; g.strokeStyle = 'rgba(232,80,106,0.9)'; g.beginPath(); g.arc(640, 360, r, 0, Math.PI * 2); g.stroke();
+    for (let k = 0; k < 4; k++) { const a = k * Math.PI / 2 + Math.PI / 4; g.beginPath(); g.moveTo(640 + Math.cos(a) * (r + 4), 360 + Math.sin(a) * (r + 4)); g.lineTo(640 + Math.cos(a) * (r + 12), 360 + Math.sin(a) * (r + 12)); g.stroke(); }
+    g.restore();
   }
   function drawPrompt(g, t, v) {
     if (!v.prompt) return;
@@ -1399,7 +1414,7 @@ window.CT = window.CT || {};
       case 'GATE': drawGate(g, t, v, dt); break;
       case 'TITLE': drawTitle(g, t, v, dt); break;
       case 'PLAY':
-        drawHurt(g, t, v); if (!carOn()) drawCross(g, t); drawCompass(g, t, v); drawQuest(g, t, v); drawBars(g, t, v, dt); drawBoss(g, t, v, dt); drawPrompt(g, t, v); drawNotes(g, t, v);
+        drawHurt(g, t, v); if (!carOn()) drawCross(g, t); drawCmdReticle(g, t); drawCompass(g, t, v); drawQuest(g, t, v); drawBars(g, t, v, dt); drawBoss(g, t, v, dt); drawPrompt(g, t, v); drawNotes(g, t, v);
         if (carOn()) drawCarGauge(g, t, v);
         if (!MB.done) mapStep(0.6);
         break;
