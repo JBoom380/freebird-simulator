@@ -1330,7 +1330,7 @@
           5: ['The citadel. My citadel. Break his throne and I will build a better one from the pieces.', 'If you die up there, I will be extremely annoyed.'],
           6: ['The Throne is broken. Vael breathes again. Listen: even the gulls sound less afraid.', 'Stay, and I name you my champion. Leave, and the songs will still get your name wrong.'],
         }[s] || ['Speak.'];
-        if (F().guardianDead && !F().skyVaultOpen) L.push('That key... the old sky-iron vaults in the Frozen Teeth. Something waits there.');
+        if ((F().guardianDead || F().boneKingDead || ms() >= 6) && !F().skyVaultOpen) L.push('That key... the old sky-iron vaults in the Frozen Teeth. Something waits there.');
         return node(L, [ch('lore', 'Tell me of Vael and its curse.', 'lore'), ch('grim', 'Do you ever rest, queen?', 'rest'), bye()]);
       },
       rest: () => node([ms() >= 6 ? 'Tonight I will sleep for a week. Tomorrow I rebuild a kingdom.' : 'I will rest when he rots. Properly, this time.',
@@ -1373,7 +1373,7 @@
         [ch('claim', 'My thanks, sorceress.', 'root', () => { if (qs('wraiths') === 1) { adv('wraiths', 99); grant('bigpotion', 3); grant('gold', 120); take('wraithdust', cnt('wraithdust')); } })]),
       root: () => {
         const s = ms(), w = qs('wraiths'), q = RPG() && RPG().quest && RPG().quest('wraiths');
-        const vaultHint = F().guardianDead && !F().skyVaultOpen;
+        const vaultHint = (F().guardianDead || F().boneKingDead || ms() >= 6) && !F().skyVaultOpen;
         const L0 = s >= 6 ? ['The moon is white again. How dull. How lovely.', 'You broke the throne. Somewhere, a star is very embarrassed.']
           : s === 5 ? ['When you stand before the Throne, do not look at it too long. It looks back.', 'And bring the blade home. I am fond of it. Less so of you. A little so of you.']
           : s === 4 ? ['The blade remembers the moon. Listen to it hum when he is near.', 'North, now. The Frozen Teeth. Mind the ice; it is thinner than it looks, like most kings.']
