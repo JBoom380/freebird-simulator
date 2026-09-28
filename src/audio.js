@@ -822,6 +822,80 @@ window.CT = window.CT || {};
   }
   const shift = (f, k) => f.map(([t, v]) => [t, v * k]);
 
+  // ── AR-15 report: baked, layered, 4 variants x 3 environments (cheap to play at 12.5 shots/s) ──
+  // Dry shot = a 2-5 ms broadband crack (a spike + high-passed noise), the body (band-passed noise, 50-120 ms),
+  // a 60-90 Hz thump with a pitch drop, the bolt carrier (two metallic ticks); then tanh saturation.
+  // Environment = 1-2 low-passed slap-back echoes (120-400 ms) + a short diffuse tail.
+  const GUN_ENV = {
+    field:   { echo: [[0.29, 0.13, 1400], [0.52, 0.06, 900]], tail: 0.35, tg: 0.04 },
+    village: { echo: [[0.12, 0.16, 2400], [0.21, 0.09, 1600]], tail: 0.55, tg: 0.07 },
+    citadel: { echo: [[0.16, 0.15, 1800], [0.38, 0.10, 1100]], tail: 1.1, tg: 0.11 },
+  };
+  function gunBuf(ctx, v, env) {
+    const E = GUN_ENV[env] || GUN_ENV.field;
+    return mkBuf(ctx, 'ar_' + env + v, 1.7, (d, sr, ch) => {
+      const r = rng(4201 + v * 97 + (ch ? 31 : 0)), N = Math.floor(0.3 * sr), s = new Float32Array(N);
+      // a. the crack
+      const nc = Math.floor((0.0025 + 0.0015 * r()) * sr), cr = new Float32Array(nc + 8);
+      for (let i = 0; i < cr.length; i++) cr[i] = (r() * 2 - 1) * Math.exp(-i / (nc * 0.35));
+      biq(cr, sr, 'hp', 2200 + r() * 800, 0.7);
+      s[0] += 1.0; s[1] -= 0.7;
+      for (let i = 0; i < cr.length; i++) s[i] += cr[i] * 2.2;
+      // b. the body: band-passed noise with a fast decay, plus the thump
+      const nb = Math.floor(0.12 * sr), bd = new Float32Array(nb), bf = 700 + r() * 500, bdk = (0.018 + 0.012 * r()) * sr;
+      for (let i = 0; i < nb; i++) bd[i] = (r() * 2 - 1) * Math.exp(-i / bdk);
+      biq(bd, sr, 'bp', bf, 0.8); biq(bd, sr, 'bp', bf * 2.3, 0.9);
+      for (let i = 0; i < nb; i++) s[i] += bd[i] * 2.4;
+      const f0 = 88 + r() * 10, f1 = 58 + r() * 6; let ph = 0;
+      for (let i = 0; i < Math.floor(0.16 * sr); i++) {
+        const t = i / sr, f = f1 + (f0 - f1) * Math.exp(-t / 0.035); ph += 2 * Math.PI * f / sr;
+        s[i] += Math.sin(ph) * 0.9 * Math.exp(-t / 0.05) * Math.min(1, t / 0.0015);
+      }
+      // c. the bolt carrier: two quick metallic ticks
+      [[0.028 + 0.004 * r(), 0.16], [0.052 + 0.006 * r(), 0.11]].forEach(([tt, a]) => {
+        const i0 = Math.floor(tt * sr);
+        for (let i = 0; i < Math.floor(0.012 * sr) && i0 + i < N; i++) {
+          const t = i / sr; s[i0 + i] += a * Math.exp(-t / 0.0025) * (Math.sin(2 * Math.PI * 3100 * t) + 0.6 * Math.sin(2 * Math.PI * 5300 * t) + 0.4 * (r() * 2 - 1));
+        }
+      });
+      // e. saturation for the punch
+      sat(s, 1.8);
+      for (let i = 0; i < N; i++) d[i] += s[i] * 0.8;
+      // d. the environment: slap-back echoes (low-passed copies of the dry shot) + a short diffuse tail
+      E.echo.forEach(([tt, g, lp], k) => {
+        const e = Float32Array.from(s); biq(e, sr, 'lp', lp * (0.9 + 0.2 * r()), 0.7); biq(e, sr, 'lp', lp, 0.7);
+        const i0 = Math.floor((tt + (ch ? 0.006 : 0) + (r() - 0.5) * 0.02) * sr);
+        for (let i = 0; i < N && i0 + i < d.length; i++) d[i0 + i] += e[i] * g;
+      });
+      const nt = Math.floor(E.tail * sr), tl = new Float32Array(nt), i1 = Math.floor(0.02 * sr);
+      for (let i = 0; i < nt; i++) tl[i] = (r() * 2 - 1) * Math.exp(-i / (nt * 0.22));
+      biq(tl, sr, 'lp', 1600, 0.7); biq(tl, sr, 'hp', 120, 0.7);
+      for (let i = 0; i < nt && i1 + i < d.length; i++) d[i1 + i] += tl[i] * E.tg * Math.min(1, i / (0.01 * sr));
+      normalize(d, 0.9); fadeEnds(d, sr, 0, 0.2);
+    }, 2);
+  }
+  // Voice steal: at most 5 overlapping reports per context; the oldest fades out in 40 ms (tails overlap naturally).
+  function gunVoice(g, t, buf, lv, rate, lp) {
+    const c = g.ctx, C = cacheOf(c), L = C.gun || (C.gun = []);
+    while (L.length && L[0].end < t) L.shift();
+    if (L.length >= 5) { const o = L.shift(); try { o.v.gain.cancelScheduledValues(t); o.v.gain.setValueAtTime(o.v.gain.value, t); o.v.gain.linearRampToValueAtTime(0, t + 0.04); o.s.stop(t + 0.05); } catch (e) { } }
+    const s = c.createBufferSource(), f = c.createBiquadFilter(), v = c.createGain();
+    s.buffer = buf; s.playbackRate.value = rate; f.type = 'lowpass'; f.frequency.value = lp; f.Q.value = 0.5; v.gain.value = lv;
+    s.connect(f); f.connect(v); v.connect(g.out); s.start(t); s.stop(t + buf.duration / rate + 0.01);
+    L.push({ s, v, end: t + buf.duration / rate });
+  }
+  function brassTink(g, t, f, lv) {                            // one brass case hitting the ground: a ringing tick
+    const c = g.ctx, o = c.createOscillator(), o2 = c.createOscillator(), v = c.createGain();
+    o.type = 'sine'; o2.type = 'sine'; o.frequency.value = f; o2.frequency.value = f * 2.76;
+    v.gain.setValueAtTime(0, t); v.gain.linearRampToValueAtTime(lv, t + 0.001); v.gain.setTargetAtTime(0, t + 0.002, 0.025);
+    o.connect(v); o2.connect(v); outTo(g, v, rr(-0.3, 0.3)); o.start(t); o2.start(t); o.stop(t + 0.2); o2.stop(t + 0.2);
+    const n = noiseThrough(g, t, 0.02, 'highpass', 1); n.f.value = 6000; n.v.setValueAtTime(lv * 0.6, t); n.v.setTargetAtTime(0, t + 0.001, 0.003);
+  }
+  function metalClick(g, t, f, lv, dk) {                       // a hard metallic click (mag catch, bolt, selector)
+    const n = noiseThrough(g, t, 0.06, 'bandpass', 2.5); n.f.value = f; n.v.setValueAtTime(lv, t); n.v.setTargetAtTime(0, t + 0.001, dk || 0.006);
+    tone(g, t, 'square', f * 0.9, f * 0.7, 0.015, lv * 0.12);
+  }
+
   // ── SFX: name -> fn(g, t, opts). Unknown names are no-ops ──────────────────
   let stepN = 0;
   const SFX = {
@@ -972,24 +1046,24 @@ window.CT = window.CT || {};
       for (let i = 0; i < 5; i++) gore(g, t + 0.3 + i * 0.13, 'glug', 0.32, 0, rr(0.8, 1.0));
       beast(g, t + 1.05, { dur: 0.5, f: [[0, 132], [0.5, 104]], noise: 0.9, nf: 1100, v: [[0, 'ah'], [0.5, 'ah']], lv: 0.2, att: 0.05, rel: 0.2 });
     },
-    ar_shot(g, t) {   // a sharp crack, a punchy low thump, then a valley echo tail
-      const c = noiseThrough(g, t, 0.12, 'highpass', 0.7); c.f.value = 1800; c.v.setValueAtTime(1.0, t); c.v.setTargetAtTime(0, t + 0.002, 0.018);
-      const m = noiseThrough(g, t, 0.35, 'bandpass', 0.8); m.f.setValueAtTime(2400, t); m.f.exponentialRampToValueAtTime(500, t + 0.2); m.v.setValueAtTime(0.7, t); m.v.setTargetAtTime(0, t + 0.004, 0.05);
-      tone(g, t, 'sine', 150, 42, 0.22, 0.9);
-      tone(g, t, 'triangle', 90, 38, 0.18, 0.4);
-      for (let i = 0; i < 3; i++) {   // echoes off the valley walls, darker and quieter each time
-        const s0 = t + 0.18 + i * rr(0.22, 0.34), e = noiseThrough(g, s0, 0.9, 'lowpass', 0.7, i % 2 ? 0.35 : -0.35);
-        e.f.value = 1200 / (i + 1); e.v.setValueAtTime(0, s0); e.v.linearRampToValueAtTime(0.22 / (i + 1), s0 + 0.02); e.v.setTargetAtTime(0, s0 + 0.04, 0.16);
-      }
+    ar_shot(g, t, o) {   // the layered report; +-5% pitch and filter per shot so full auto never loops
+      const v = (Math.random() * 4) | 0, env = GUN_ENV[o.env] ? o.env : 'field';
+      gunVoice(g, t, gunBuf(g.ctx, v, env), o.auto ? 0.82 : 0.95, rr(0.95, 1.05), rr(9000, 14000));
     },
-    ar_dry(g, t) { const n = noiseThrough(g, t, 0.05, 'highpass', 2); n.f.value = 3500; n.v.setValueAtTime(0.35, t); n.v.setTargetAtTime(0, t + 0.002, 0.008); tone(g, t, 'square', 1800, 1200, 0.02, 0.05); },
-    ar_reload(g, t) {   // mag out, mag in (seated), the bolt slams home
-      const click = (s0, f, lv) => { const n = noiseThrough(g, s0, 0.08, 'bandpass', 3); n.f.value = f; n.v.setValueAtTime(lv, s0); n.v.setTargetAtTime(0, s0 + 0.003, 0.015); };
-      click(t + 0.15, 1500, 0.35); swish(g, t + 0.18, 0.2, 400, 900, 300, 0.08);
-      click(t + 1.05, 900, 0.3); click(t + 1.25, 1300, 0.55); tone(g, t + 1.25, 'sine', 180, 90, 0.08, 0.3);
-      click(t + 1.7, 2200, 0.35); click(t + 1.86, 1100, 0.6); tone(g, t + 1.86, 'sine', 220, 80, 0.1, 0.35);
+    ar_dry(g, t) { metalClick(g, t, 3200, 0.5, 0.004); metalClick(g, t + 0.012, 1800, 0.2, 0.005); },
+    ar_select(g, t) { metalClick(g, t, 2600, 0.35, 0.005); metalClick(g, t + 0.03, 4200, 0.18, 0.003); },
+    ar_reload(g, t) {   // the mag release, the empty mag sliding out, the slap-in, the charging-handle rack
+      metalClick(g, t + 0.12, 2400, 0.45); swish(g, t + 0.16, 0.22, 500, 1400, 400, 0.1);
+      gore(g, t + 0.62, 'clang', 0.08, -0.3, 1.8);
+      swish(g, t + 1.0, 0.18, 300, 900, 500, 0.08);
+      metalClick(g, t + 1.22, 900, 0.7, 0.012); tone(g, t + 1.22, 'sine', 160, 70, 0.1, 0.45); metalClick(g, t + 1.25, 2800, 0.3);
+      metalClick(g, t + 1.66, 2000, 0.4); swish(g, t + 1.68, 0.14, 800, 2600, 900, 0.14);
+      metalClick(g, t + 1.84, 1200, 0.75, 0.01); metalClick(g, t + 1.86, 3400, 0.45); tone(g, t + 1.84, 'sine', 210, 80, 0.12, 0.4);
     },
-    ar_casing(g, t) { for (let i = 0; i < 3; i++) { const s0 = t + i * rr(0.06, 0.1); tone(g, s0, 'sine', rr(3800, 5200), rr(3000, 4200), 0.05, 0.08 / (i + 1)); } },
+    ar_casing(g, t) {   // brass tinkles on the ground: 2 or 3 bounces, varied
+      const f = rr(3600, 5200), n = Math.random() < 0.5 ? 2 : 3; let s0 = t, lv = rr(0.1, 0.16);
+      for (let i = 0; i < n; i++) { brassTink(g, s0, f * rr(0.97, 1.03), lv); s0 += rr(0.07, 0.13) * (1 - i * 0.3); lv *= 0.5; }
+    },
     drag(g, t) {   // paper and tobacco crackle over a soft rising inhale
       const n = noiseThrough(g, t, 1.3, 'bandpass', 1.1); n.f.setValueAtTime(500, t); n.f.exponentialRampToValueAtTime(2600, t + 1.0);
       n.v.setValueAtTime(0, t); n.v.linearRampToValueAtTime(0.1, t + 0.5); n.v.linearRampToValueAtTime(0.13, t + 0.95); n.v.setTargetAtTime(0, t + 1.0, 0.06);
@@ -1010,7 +1084,7 @@ window.CT = window.CT || {};
       swish(g, t + 0.12, 0.35, 250, 900, 500, 0.2);
     },
   };
-  const SDUR = { beer: 2.2, ar_shot: 1.8, ar_reload: 2.4, ar_casing: 0.5, drag: 1.6, exhale: 2.2, lighter: 0.8, charge: 1.8, chargeFull: 2.4, gib: 2.6, sever: 1.6, death: 3, drink: 1.8, levelup: 4, discover: 5.5, quest: 3, wolf_howl: 3.6, ghoul_moan: 2.8, troll_bellow: 3, troll_slam: 2, wraith_shriek: 2.6, boss_roar: 4, boss_laugh: 2.5, thunder: 6.5, parry: 2.6, clang: 1.6, orc_roar: 2, orc_die: 2 };
+  const SDUR = { beer: 2.2, ar_shot: 1.8, ar_reload: 2.4, ar_casing: 0.6, ar_select: 0.3, drag: 1.6, exhale: 2.2, lighter: 0.8, charge: 1.8, chargeFull: 2.4, gib: 2.6, sever: 1.6, death: 3, drink: 1.8, levelup: 4, discover: 5.5, quest: 3, wolf_howl: 3.6, ghoul_moan: 2.8, troll_bellow: 3, troll_slam: 2, wraith_shriek: 2.6, boss_roar: 4, boss_laugh: 2.5, thunder: 6.5, parry: 2.6, clang: 1.6, orc_roar: 2, orc_die: 2 };
   const LOOPS = { rain: 1, wind: 1, fire_loop: 1 };
 
   // ── Iron Stallion (vehicle.js): a V8 voice + car one-shots ─────────────────

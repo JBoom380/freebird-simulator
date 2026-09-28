@@ -3,15 +3,15 @@
   const W = 1280, H = 720, TAU = Math.PI * 2;
   const LS_SENS = 'crimsonThrone.sens', LS_INV = 'crimsonThrone.invertY';
   const HEAVY_MOUSE = 0.22, HEAVY_TOUCH = 0.25, DTAP = 0.25, STICK_R = 110, DEAD = 0.15, TOUCH_SENS = 0.006;
-  const PRESSED = ['jump', 'attack', 'heavyRelease', 'dodge', 'interact', 'torch', 'inventory', 'map', 'pause', 'usePotion', 'offhand1', 'offhand2', 'offhandCycle', 'fire', 'reload', 'camToggle', 'horn', 'vehExit'];
+  const PRESSED = ['jump', 'attack', 'heavyRelease', 'dodge', 'interact', 'torch', 'inventory', 'map', 'pause', 'usePotion', 'offhand1', 'offhand2', 'offhandCycle', 'fire', 'reload', 'fireMode', 'camToggle', 'horn', 'vehExit'];
   const GAME_CODES = new Set(['Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyA', 'KeyS', 'KeyD',
-    'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'KeyE', 'KeyT', 'KeyI', 'KeyM', 'KeyQ', 'KeyR', 'Escape', 'Digit1', 'Digit2', 'KeyV', 'KeyH']);
+    'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'KeyE', 'KeyT', 'KeyI', 'KeyM', 'KeyQ', 'KeyR', 'Escape', 'Digit1', 'Digit2', 'KeyV', 'KeyH', 'KeyB']);
   const DIR_OF = { KeyW: 'u', ArrowUp: 'u', KeyS: 'd', ArrowDown: 'd', KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r' };
   const now = () => performance.now() / 1000;
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
   const state = { moveX: 0, moveY: 0, lookDX: 0, lookDY: 0, sprint: false, jump: false, attack: false, heavy: 0, heavyRelease: false,
-    block: false, dodge: false, interact: false, torch: false, inventory: false, map: false, pause: false, usePotion: false, offhand1: false, offhand2: false, offhandCycle: false, fire: false, reload: false,
+    block: false, dodge: false, interact: false, torch: false, inventory: false, map: false, pause: false, usePotion: false, offhand1: false, offhand2: false, offhandCycle: false, fire: false, reload: false, fireMode: false, fireHeld: false,
     throttle: 0, brakeAxis: 0, handbrake: false, boost: false, camToggle: false, horn: false, vehExit: false };   // the last row drives the Iron Stallion (vehicle.js)
   const driving = () => !!(CT.vehicle && CT.vehicle.driving);
   const pend = {}; PRESSED.forEach(k => (pend[k] = false));
@@ -56,6 +56,7 @@
       case 'KeyT': pend.torch = true; break;
       case 'Digit1': case 'Numpad1': pend.offhand1 = true; break;
       case 'Digit2': case 'Numpad2': pend.offhand2 = true; break;
+      case 'KeyB': if (rifle()) pend.fireMode = true; break;
       case 'Tab': case 'KeyI': pend.inventory = true; break;
       case 'KeyM': pend.map = true; break;
       case 'Escape': pend.pause = true; break;
@@ -71,9 +72,10 @@
   const mouseLive = () => M.locked || lockRefused || (core && core.isTouch);
   function onMouseDown(e) {
     if (!inPlay() || !mouseLive()) return;
-    if (e.button === 0) { if (rifle()) pend.fire = true; else press(ch.mouse); } else if (e.button === 2) rmb = true;
+    if (e.button === 0) { lmb = true; if (rifle()) pend.fire = true; else press(ch.mouse); } else if (e.button === 2) rmb = true;
   }
-  function onMouseUp(e) { if (e.button === 0) release(ch.mouse); else if (e.button === 2) rmb = false; }
+  let lmb = false;
+  function onMouseUp(e) { if (e.button === 0) { lmb = false; release(ch.mouse); } else if (e.button === 2) rmb = false; }
   function onMouseMove(e) {
     if (!inPlay() || !(M.locked || lockRefused)) return;
     let x = e.movementX || 0, y = e.movementY || 0;
@@ -98,6 +100,7 @@
     { id: 'dodge', label: 'DODGE', r: 56, kind: 'press', key: 'dodge', ring: 178, ang: 226 },
     { id: 'jump', label: 'JUMP', r: 56, kind: 'press', key: 'jump', ring: 178, ang: 272 },
     { id: 'reload', label: 'RELOAD', r: 42, kind: 'press', key: 'reload', ring: 300, ang: 164 },
+    { id: 'firemode', label: 'SEMI', r: 34, kind: 'press', key: 'fireMode', ring: 390, ang: 170 },
     { id: 'potion', label: 'DRAUGHT', r: 42, kind: 'press', key: 'usePotion', ring: 318, ang: 188 },
     { id: 'torch', label: 'TORCH', r: 42, kind: 'press', key: 'torch', ring: 318, ang: 262 },
     { id: 'offhand', label: 'SMOKE', r: 38, kind: 'press', key: 'offhandCycle', ring: 330, ang: 286 },
@@ -131,7 +134,7 @@
       else { const a = b.ang * Math.PI / 180; b.x = ax + Math.cos(a) * b.ring * k; b.y = ay + Math.sin(a) * b.ring * k; }
     });
   }
-  const visible = b => (driving() ? !!b.drive || b.tl != null : !b.drive) && (b.id !== 'use' || showUse) && (b.id !== 'reload' || rifle());
+  const visible = b => (driving() ? !!b.drive || b.tl != null : !b.drive) && (b.id !== 'use' || showUse) && ((b.id !== 'reload' && b.id !== 'firemode') || rifle());
   function toUI(cx, cy) {
     const r = uiCanvas ? uiCanvas.getBoundingClientRect() : { left: 0, top: 0, width: W, height: H };
     return { x: (cx - r.left) / r.width * W, y: (cy - r.top) / r.height * H, s: r.width / W };
@@ -206,10 +209,10 @@
 
   // ── Gamepad (standard mapping) ──
   const padPrev = [];
-  const pad = { mx: 0, my: 0, lx: 0, ly: 0, block: false, sprint: false, thr: 0, brk: 0, hand: false, boost: false };
+  const pad = { mx: 0, my: 0, lx: 0, ly: 0, block: false, sprint: false, thr: 0, brk: 0, hand: false, boost: false, fire: false };
   function dz(v) { const a = Math.abs(v); return a < DEAD ? 0 : Math.sign(v) * (a - DEAD) / (1 - DEAD); }
   function pollPad(dt, play) {
-    pad.mx = pad.my = pad.lx = pad.ly = 0; pad.block = pad.sprint = false; pad.thr = pad.brk = 0; pad.hand = pad.boost = false;
+    pad.mx = pad.my = pad.lx = pad.ly = 0; pad.block = pad.sprint = false; pad.thr = pad.brk = 0; pad.hand = pad.boost = pad.fire = false;
     let gp = null;
     try { const l = navigator.getGamepads ? navigator.getGamepads() : []; for (const g of l) if (g && g.connected) { gp = g; break; } } catch (e) {}
     if (!gp) { if (ch.pad.down) resetChan(ch.pad); return; }
@@ -221,6 +224,7 @@
       const rx = dz(ax[2] || 0), ry = dz(ax[3] || 0);
       pad.lx = Math.sign(rx) * rx * rx * 3.0 * dt; pad.ly = Math.sign(ry) * ry * ry * 2.4 * dt * (invertY ? -1 : 1);
       pad.block = bt(6); pad.sprint = bt(10) || bt(4) || Math.hypot(pad.mx, pad.my) > 0.97;
+      pad.fire = bt(7); if (edge(13) && rifle()) pend.fireMode = true;
       if (rifle()) { if (edge(7)) pend.fire = true; if (ch.pad.down) resetChan(ch.pad); } else if (bt(7)) press(ch.pad); else release(ch.pad);
       if (edge(0)) pend.jump = true;
       if (edge(1)) pend.dodge = true;
@@ -299,6 +303,7 @@
     PRESSED.forEach(k => { state[k] = pend[k]; pend[k] = false; });
     state.attack = state.attack || atk; state.heavyRelease = rel; state.heavy = heavy;
     state.block = rmb || pad.block || B.block.down > 0;
+    state.fireHeld = rifle() && (lmb || !!pad.fire || B.attack.down > 0);   // AUTO fires while held
     M.lostLock = pendLost; pendLost = false;
     // Iron Stallion (vehicle.js): the driving inputs; while driving, E/USE leaves the car instead of talking or looting
     state.throttle = pad.thr; state.brakeAxis = pad.brk;
@@ -468,6 +473,13 @@
       ctx.beginPath(); ctx.moveTo(24, 30); ctx.lineTo(29, 22); ctx.lineTo(33, 31); ctx.stroke();
     },
     hbrake(ctx, t) { DRIVE_ICONS.hbrake(ctx, t); }, dexit(ctx, t) { DRIVE_ICONS.dexit(ctx, t); }, dboost(ctx, t) { DRIVE_ICONS.dboost(ctx, t); }, dcam(ctx, t) { DRIVE_ICONS.dcam(ctx, t); }, dhorn(ctx, t) { DRIVE_ICONS.dhorn(ctx, t); },
+    firemode(ctx) {
+      const auto = !!(CT.player && CT.player.fireMode === 'auto');
+      ctx.fillStyle = '#2a2c30'; ctx.fillRect(-22, -14, 44, 28); ctx.strokeStyle = INK; ctx.lineWidth = 2.5; ctx.strokeRect(-22, -14, 44, 28);
+      ctx.fillStyle = auto ? '#ff5a30' : BONE; ctx.font = 'bold 15px Georgia, serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(auto ? 'AUTO' : 'SEMI', 0, 1);
+      ctx.save(); ctx.rotate(auto ? 0.9 : -0.9); ctx.fillStyle = '#c9974f'; ctx.fillRect(-3, -30, 6, 16); ctx.restore();
+    },
     reload(ctx) {
       ctx.save(); ctx.rotate(0.25);
       ctx.fillStyle = '#2a2c30'; ctx.beginPath(); ctx.moveTo(-10, -22); ctx.lineTo(8, -22); ctx.quadraticCurveTo(12, 6, 16, 26); ctx.lineTo(-2, 30); ctx.quadraticCurveTo(-6, 4, -10, -22); ctx.closePath(); ctx.fill(); stroke(ctx, 2.5);
@@ -555,7 +567,7 @@
     }
     ctx.restore();
     const small = b.tl != null;
-    const txt = charge > 0 ? (charge >= 1 ? 'UNLEASH' : 'HEAVY') : b.id === 'jump' && smoking() && !rifle() ? 'DRAG' : b.id === 'block' && rifle() ? 'AIM' : b.id === 'attack' && rifle() ? 'FIRE' : b.id === 'offhand' ? (smoking() ? 'SWAP' : 'SMOKE') : b.label;
+    const txt = charge > 0 ? (charge >= 1 ? 'UNLEASH' : 'HEAVY') : b.id === 'jump' && smoking() && !rifle() ? 'DRAG' : b.id === 'block' && rifle() ? 'AIM' : b.id === 'attack' && rifle() ? 'FIRE' : b.id === 'firemode' ? 'MODE' : b.id === 'offhand' ? (smoking() ? 'SWAP' : 'SMOKE') : b.label;
     label(ctx, txt, b.x, small ? b.y + r + 13 : b.y + r + (charge > 0 ? 30 : 16), small ? 13 : b.r > 60 ? 19 : 15, charge > 0 ? 'rgba(255,150,90,0.98)' : undefined);
     if (b.id === 'potion' && potions >= 0) {
       const cx = b.x + r * 0.72, cy = b.y - r * 0.72;

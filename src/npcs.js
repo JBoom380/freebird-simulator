@@ -550,7 +550,7 @@
     if (poof) fxPoof(n.pos);
     n.pos.set(v.x, H(v.x, v.z), v.z); n.yawNow = Math.atan2(pp.x - v.x, pp.z - v.z);
     if (poof) fxPoof(n.pos);
-    COMP.vel.set(0, 0, 0); COMP.stuckT = 0;
+    COMP.vel.set(0, 0, 0); COMP.stuckT = 0; COMP.state = 'idle'; COMP.anchor = null; if (COMP.trail) COMP.trail.length = 0;
   }
   npcs.companionSummon = function () {
     const c = comp(), n = COMP.n; if (!c || !n) return false;
@@ -618,7 +618,7 @@
       n.dist = 0; if (live) compHeal(n, dt, st); fxTick(dt);
       return;
     }
-    if (ride && ride.mode === 'out') { COMP.inCar = false; n.pos.set(ride.x, H(ride.x, ride.z), ride.z); n.yawNow = ride.yaw; COMP.vel.set(0, 0, 0); COMP.moving = true; }
+    if (ride && ride.mode === 'out') { COMP.inCar = false; n.pos.set(ride.x, H(ride.x, ride.z), ride.z); n.yawNow = ride.yaw; COMP.vel.set(0, 0, 0); COMP.moving = true; COMP.state = 'move'; }
     else if (st.following && driving && !ride) {   // riding (no passenger seat available): hidden, carried with the car
       COMP.inCar = true; n.pos.set(pp.x, n.pos.y, pp.z); R.root.visible = false; if (n.spr) n.spr.root.visible = false;
       if (COMP.bubble) COMP.bubble.sp.visible = false;
@@ -629,7 +629,7 @@
       COMP.inCar = false; const { rx, rz, fx, fz } = playerFrame();
       const v = new T.Vector3(pp.x - rx * 1.8 + fx * 1.5, 0, pp.z - rz * 1.8 + fz * 1.5);
       if (CT.world && CT.world.collide) { const r = CT.world.collide(v, 0.45); if (r) v.copy(r); }
-      n.pos.set(v.x, H(v.x, v.z), v.z); fxPoof(n.pos); COMP.vel.set(0, 0, 0); COMP.moving = true;
+      n.pos.set(v.x, H(v.x, v.z), v.z); fxPoof(n.pos); COMP.vel.set(0, 0, 0); COMP.moving = true; COMP.state = 'move';
     }
     if (ride && ride.mode === 'walk') { /* heading for the passenger door */ }
     else if (st.following && COMP.task) speed = compTask(n, dt, pp, st);
@@ -743,7 +743,7 @@
     if (sp > 1.5 && moved < sp * 0.2) COMP.stuckT += dt; else COMP.stuckT = Math.max(0, COMP.stuckT - dt * 2);
     return moved;
   }
-  function taskDone(line) { COMP.task = null; if (line) speak(line, true); }
+  function taskDone(line) { COMP.task = null; COMP.state = 'move'; if (line) speak(line, true); }
   function compTask(n, dt, pp, st) {
     const k = COMP.task; k.t += dt;
     if (k.t > 45 || COMP.stuckT > 5) { COMP.stuckT = 0; return taskDone('I give up. It\'s not worth it.'), 0; }
@@ -870,74 +870,74 @@
     if (CT.world && CT.world.waterAt && CT.world.waterAt(v.x, v.z) > 0.6) return true;
     return false;
   }
+  // TRAIL follow (a Skyrim follower): the player's walked path is recorded as breadcrumbs (a point every 0.5 m of movement,
+  // never the camera). Her target is the crumb 3.5 m back along that path (7 m in a fight); she walks the crumbs, so she takes
+  // the corners the player took. Once she settles she does NOTHING until the player's position has moved more than 1.5 m:
+  // turning or looking around never moves her. Idle she faces the player; moving she faces where she walks.
   function compFollow(n, dt, pp) {
-    const { fx, fz, rx, rz } = playerFrame();
-    const dxp = n.pos.x - pp.x, dzp = n.pos.z - pp.z, dp = Math.hypot(dxp, dzp);
-    // teleport only when far away or stuck: to her behind spot (out of view), in a puff of smoke
-    if (dp > 60 || COMP.stuckT > 4) {
-      const v = slotAt(pp, fx, fz, rx, rz, COMP.side, SLOT.tAng, 6);   // out of sight, behind-left
-      if (CT.world && CT.world.collide) { const r = CT.world.collide(_w.set(v.x, 0, v.z), 0.45); if (r) v.set(r.x, 0, r.z); }
-      fxPoof(n.pos); n.pos.set(v.x, H(v.x, v.z), v.z); fxPoof(n.pos);
-      COMP.vel.set(0, 0, 0); COMP.stuckT = 0; COMP.moving = true; return 0;
-    }
-    // side: combat -> away from the nearest monster; else left, mirrored when blocked (re-checked twice a second)
-    const mon = CT.monsters && CT.monsters.nearest ? CT.monsters.nearest(pp, 15) : null;
-    const combat = !!(mon && mon.alive !== false && !mon.dead);
-    COMP.sideT = (COMP.sideT || 0) - dt;
-    if (COMP.sideT <= 0) {
-      COMP.sideT = 0.5;
-      let want = -1;
-      if (combat) want = ((mon.pos.x - pp.x) * rx + (mon.pos.z - pp.z) * rz) > 0 ? -1 : 1;
-      const ang = combat ? SLOT.cAng : SLOT.ang, dist = combat ? SLOT.cDist : SLOT.dist;
-      if (slotBlocked(slotAt(pp, fx, fz, rx, rz, want, ang, dist), pp) && !slotBlocked(slotAt(pp, fx, fz, rx, rz, -want, ang, dist), pp)) want = -want;
-      COMP.side = want;
-    }
-    // the player's measured velocity (smoothed); the slot leads it so she keeps pace instead of trailing out of frame
+    // the player's measured velocity (smoothed)
     if (!COMP.pv) COMP.pv = new T.Vector3();
     if (COMP.fpp && dt > 0) { const vx = (pp.x - COMP.fpp.x) / dt, vz = (pp.z - COMP.fpp.z) / dt, ok = Math.hypot(vx, vz) < 20;
-      if (ok) { COMP.pv.x += (vx - COMP.pv.x) * Math.min(1, dt * 5); COMP.pv.z += (vz - COMP.pv.z) * Math.min(1, dt * 5); } } else if (!COMP.fpp) COMP.fpp = new T.Vector3();
+      if (ok) { COMP.pv.x += (vx - COMP.pv.x) * Math.min(1, dt * 5); COMP.pv.z += (vz - COMP.pv.z) * Math.min(1, dt * 5); } }
+    // the breadcrumb trail; a jump (teleport, respawn, car exit) restarts it
+    const TR = COMP.trail || (COMP.trail = []);
+    if (COMP.fpp && Math.hypot(pp.x - COMP.fpp.x, pp.z - COMP.fpp.z) > 8) { TR.length = 0; COMP.pv.set(0, 0, 0); }
+    if (!COMP.fpp) COMP.fpp = new T.Vector3();
     COMP.fpp.copy(pp); COMP.pSpeed = Math.hypot(COMP.pv.x, COMP.pv.z);
-    COMP.stillT = COMP.pSpeed < 0.6 ? (COMP.stillT || 0) + dt : 0;
-    const stopped = COMP.stillT > 0.7;
-    const sAng = combat ? SLOT.cAng : stopped ? SLOT.sAng : SLOT.ang, sDist = combat ? SLOT.cDist : stopped ? SLOT.sDist : SLOT.dist;
-    const tgt = slotAt(pp, fx, fz, rx, rz, COMP.side, sAng, sDist);
-    tgt.x += COMP.pv.x * 0.1; tgt.z += COMP.pv.z * 0.1;   // a touch of lead so she keeps pace at the shoulder
-    const dx = tgt.x - n.pos.x, dz = tgt.z - n.pos.z, d = Math.hypot(dx, dz);
-    // dead zone only while the player is still: start beyond 1.5 m from the slot, stop within 0.4 m
-    const pMoving = COMP.pSpeed > 1.0;
-    if (!COMP.moving && (d > 1.5 || (pMoving && d > 0.5))) COMP.moving = true;
-    if (COMP.moving && d < 0.4 && !pMoving) COMP.moving = false;
-    let speed = 0, dirx = 0, dirz = 0;
-    if (COMP.moving && d > 1e-3) {
-      const base = COMP.pSpeed;
-      speed = d > 10 ? Math.max(base + 3, 8.5) : d > 5 ? Math.max(base + 2, 5.6) : clamp(base + (d - 0.4) * 1.1, 0, base + 1.6);
-      if (!pMoving) speed = Math.min(speed, d > 5 ? speed : 1.6);   // stepping up beside a standing player is a stroll
-      dirx = dx / d; dirz = dz / d;
-      // arc around the player instead of cutting through: if the straight line passes the player within 2 m, go tangentially
-      const ax = dxp / (dp || 1), az = dzp / (dp || 1), bx = (tgt.x - pp.x), bz = (tgt.z - pp.z), bl = Math.hypot(bx, bz) || 1;
-      const t = clamp(((pp.x - n.pos.x) * dx + (pp.z - n.pos.z) * dz) / (d * d), 0, 1);
-      const cx = n.pos.x + dx * t - pp.x, cz = n.pos.z + dz * t - pp.z;
-      const herSide = dxp * rx + dzp * rz, slotSide = (tgt.x - pp.x) * rx + (tgt.z - pp.z) * rz;
-      if (Math.hypot(cx, cz) < 1.3 && dp < 7 && herSide * slotSide < 0) {   // only when the straight line would cross the player
-        const cr = ax * (bz / bl) - az * (bx / bl), sg = cr >= 0 ? 1 : -1;       // rotate toward the slot's side
-        const tx = -az * sg, tz = ax * sg, R0 = Math.max(2.6, dp);
-        const k = (R0 - dp) * 0.8;                                               // hold the arc radius
-        dirx = tx + ax * k; dirz = tz + az * k; const l = Math.hypot(dirx, dirz) || 1; dirx /= l; dirz /= l;
-      }
+    const lastC = TR[TR.length - 1];
+    if (!lastC || Math.hypot(pp.x - lastC.x, pp.z - lastC.z) >= 0.5) { TR.push({ x: pp.x, z: pp.z }); if (TR.length > 240) TR.shift(); }
+    const mon = CT.monsters && CT.monsters.inCombat && CT.monsters.nearest ? CT.monsters.nearest(pp, 15) : null;   // a real fight, not a passer-by
+    const combat = !!(mon && mon.alive !== false && !mon.dead);
+    const back = combat ? 7 : 3.5;
+    // the crumb `back` metres behind the player along the walked path
+    let ti = TR.length - 1, acc = Math.hypot(pp.x - TR[ti].x, pp.z - TR[ti].z);
+    while (ti > 0 && acc < back) { acc += Math.hypot(TR[ti].x - TR[ti - 1].x, TR[ti].z - TR[ti - 1].z); ti--; }
+    const tgt = TR[ti];
+    const dxp = n.pos.x - pp.x, dzp = n.pos.z - pp.z, dp = Math.hypot(dxp, dzp);
+    // far or stuck: reappear at the trail point behind the player (out of view), in a puff of smoke
+    if (dp > 60 || COMP.stuckT > 4) {
+      const v = new T.Vector3(tgt.x, 0, tgt.z);
+      if (v.distanceTo(_w.set(pp.x, 0, pp.z)) < 2) { const { fx, fz } = playerFrame(); v.set(pp.x - fx * back, 0, pp.z - fz * back); }
+      if (CT.world && CT.world.collide) { const r = CT.world.collide(_w.set(v.x, 0, v.z), 0.45); if (r) v.set(r.x, 0, r.z); }
+      fxPoof(n.pos); n.pos.set(v.x, H(v.x, v.z), v.z); fxPoof(n.pos);
+      COMP.vel.set(0, 0, 0); COMP.stuckT = 0; COMP.state = 'idle'; COMP.anchor = pp.clone(); return 0;
     }
-    _v.set(dirx * speed, 0, dirz * speed);
-    COMP.vel.lerp(_v, Math.min(1, dt * (speed > 0 ? 4 : 6)));   // ease in and out
-    if (!COMP.moving && COMP.vel.lengthSq() < 0.02) COMP.vel.set(0, 0, 0);
+    // idle: stay exactly where she is until the player has walked more than 1.5 m (or a fight comes to her)
+    if (COMP.state !== 'move') {
+      if (!COMP.anchor) COMP.anchor = pp.clone();
+      const walkedOff = Math.hypot(pp.x - COMP.anchor.x, pp.z - COMP.anchor.z) > 1.5;
+      if (!walkedOff && !(combat && dp < 4.5)) {
+        COMP.vel.set(0, 0, 0);
+        if (dp > 0.5) turnTo(n, Math.atan2(-dxp, -dzp), dt, 2.5);   // idling: she faces the player
+        return 0;
+      }
+      COMP.state = 'move';
+    }
+    // moving: walk the crumbs from the one nearest to her toward the target
+    let best = ti, bd = 1e9;
+    for (let i = Math.max(0, ti - 80); i <= ti; i++) { const d = Math.hypot(TR[i].x - n.pos.x, TR[i].z - n.pos.z); if (d < bd) { bd = d; best = i; } }
+    const wp = bd > 3 || best >= ti ? TR[best] : TR[best + 1];
+    let pathD = bd; for (let i = best; i < ti; i++) pathD += Math.hypot(TR[i + 1].x - TR[i].x, TR[i + 1].z - TR[i].z);
+    const pMoving = COMP.pSpeed > 0.8, dT = Math.hypot(tgt.x - n.pos.x, tgt.z - n.pos.z);
+    // arrived behind a standing player: settle (and stay settled while he turns)
+    if (!pMoving && dT < 0.5) { COMP.state = 'idle'; COMP.anchor = pp.clone(); COMP.vel.set(0, 0, 0); return 0; }
+    // pace: the player's speed (eased); jog beyond 6 m of path, run beyond 12 m; a stroll to a standing player
+    const base = COMP.pSpeed;
+    let speed = pathD > 12 ? Math.max(base + 3, 8.5) : pathD > 6 ? Math.max(base + 1.5, 5.6)
+      : pMoving ? clamp(base + (pathD - 0.5) * 0.6, 0, base + 1.2) : clamp(0.6 + pathD * 0.8, 0, 1.8);
+    let wx = wp.x - n.pos.x, wz = wp.z - n.pos.z, wl = Math.hypot(wx, wz);
+    if (wl < 0.05) { wx = tgt.x - n.pos.x; wz = tgt.z - n.pos.z; wl = Math.hypot(wx, wz); }
+    if (wl < 0.02) speed = 0;
+    _v.set(wl > 0 ? wx / wl * speed : 0, 0, wl > 0 ? wz / wl * speed : 0);
+    COMP.vel.lerp(_v, Math.min(1, dt * 4));   // ease in and out
     const ox = n.pos.x, oz = n.pos.z;
     n.pos.x += COMP.vel.x * dt; n.pos.z += COMP.vel.z * dt;
     const qx = n.pos.x - pp.x, qz = n.pos.z - pp.z, q = Math.hypot(qx, qz);
-    if (q < 1.4 && q > 1e-3) { n.pos.x = pp.x + qx / q * 1.4; n.pos.z = pp.z + qz / q * 1.4; }
+    if (q < 1.4 && q > 1e-3) { n.pos.x = pp.x + qx / q * 1.4; n.pos.z = pp.z + qz / q * 1.4; }   // personal space
     if (CT.world && CT.world.collide) { _w.set(n.pos.x, 0, n.pos.z); const r = CT.world.collide(_w, 0.4); if (r) { n.pos.x = r.x; n.pos.z = r.z; } }
     const moved = dt > 0 ? Math.hypot(n.pos.x - ox, n.pos.z - oz) / dt : 0;
     if (speed > 1.5 && moved < speed * 0.2) COMP.stuckT += dt; else COMP.stuckT = Math.max(0, COMP.stuckT - dt * 2);
-    if (moved > 0.5) turnTo(n, Math.atan2(COMP.vel.x, COMP.vel.z), dt, 8);
-    else if (stopped && !combat) turnTo(n, Math.atan2(fx, fz), dt, 3);   // idling beside the player, facing the same way
-    else if (dp < 12) turnTo(n, Math.atan2(-dxp, -dzp), dt, 3);
+    if (moved > 0.3) turnTo(n, Math.atan2(COMP.vel.x, COMP.vel.z), dt, 8);   // she faces where she walks
     return moved;
   }
   // ── Heal: toss the player a lit smoke ──────────────────────────────────────

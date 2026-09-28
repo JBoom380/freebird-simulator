@@ -911,7 +911,7 @@
 
   // ── State ──────────────────────────────────────────────────────────────────
   let CORE = null, ready = false, curW = null, kindName = '';
-  const I = { moveX: 0, moveY: 0, lookDX: 0, lookDY: 0, sprint: false, jump: false, attack: false, heavy: 0, heavyRelease: false, block: false, dodge: false, torch: false, usePotion: false, offhand1: false, offhand2: false, offhandCycle: false, fire: false, reload: false };
+  const I = { moveX: 0, moveY: 0, lookDX: 0, lookDY: 0, sprint: false, jump: false, attack: false, heavy: 0, heavyRelease: false, block: false, dodge: false, torch: false, usePotion: false, offhand1: false, offhand2: false, offhandCycle: false, fire: false, reload: false, fireMode: false, fireHeld: false };
   let fakeHeavy = 0;
   let atk = 0, atkK = 0, atkDur = 1, comboIdx = 0, comboTimer = 0, hitDone = false, buffered = false, whooshed = false, swingId = 0, heavyCharge = 0;
   let charging = false, charge = 0, fullFx = false, blockT = 0, guardBreakT = 0, blockKick = 0, parryT = 0, parryBurst = false;
@@ -939,11 +939,11 @@
     const s = (test && c.state) || core.input || {};
     I.moveX = +s.moveX || 0; I.moveY = +s.moveY || 0; I.lookDX = +s.lookDX || 0; I.lookDY = +s.lookDY || 0;
     I.sprint = !!s.sprint; I.jump = !!s.jump; I.attack = !!s.attack; I.heavy = +s.heavy || 0; I.heavyRelease = !!s.heavyRelease;
-    I.block = !!s.block; I.dodge = !!s.dodge; I.torch = !!s.torch; I.usePotion = !!s.usePotion; I.offhand1 = !!s.offhand1; I.offhand2 = !!s.offhand2; I.offhandCycle = !!s.offhandCycle; I.fire = !!s.fire; I.reload = !!s.reload;
+    I.block = !!s.block; I.dodge = !!s.dodge; I.torch = !!s.torch; I.usePotion = !!s.usePotion; I.offhand1 = !!s.offhand1; I.offhand2 = !!s.offhand2; I.offhandCycle = !!s.offhandCycle; I.fire = !!s.fire; I.reload = !!s.reload; I.fireMode = !!s.fireMode; I.fireHeld = !!s.fireHeld;
     if (test) {                                                // controls absent: honour the debug flags, pressed flags last one frame
       if (c._forceAttack) { c._forceAttack = false; I.attack = true; }
       if (c._forceHeavy) { c._forceHeavy = false; fakeHeavy = 0.001; }
-      if (c.state && c.state !== core.input) { const q = c.state; q.attack = q.jump = q.dodge = q.torch = q.usePotion = q.heavyRelease = q.interact = q.offhand1 = q.offhand2 = q.offhandCycle = q.fire = q.reload = false; q.lookDX = q.lookDY = 0; }
+      if (c.state && c.state !== core.input) { const q = c.state; q.attack = q.jump = q.dodge = q.torch = q.usePotion = q.heavyRelease = q.interact = q.offhand1 = q.offhand2 = q.offhandCycle = q.fire = q.reload = q.fireMode = false; q.lookDX = q.lookDY = 0; }
     }
     if (fakeHeavy > 0) { fakeHeavy += dt; I.heavy = fakeHeavy; if (fakeHeavy >= 1.1) { I.heavy = 0; I.heavyRelease = true; fakeHeavy = 0; } }
   }
@@ -1298,7 +1298,7 @@
     PL.roll = Math.sin(bobPh) * 0.008 * bobAmp + lean + Math.sin(core.time * 0.7) * 0.0436 * dizzy;
     cam.position.set(PL.pos.x, PL.pos.y + P.eye + (Math.abs(Math.sin(bobPh)) - 0.5) * 0.07 * bobAmp - dip - (charging ? charge * 0.05 : 0), PL.pos.z);
     if (exhaleT >= 0) { const k = Math.sin(Math.PI * exhaleT / 2.5); PL.roll += Math.sin(core.time * 1.3) * 0.016 * k; }
-    cam.rotation.set(PL.pitch + recoilP + hurtT * 0.05 + Math.sin(core.time * 0.45) * 0.03 * dizzy + (exhaleT >= 0 ? Math.sin(core.time * 0.9) * 0.012 * Math.sin(Math.PI * exhaleT / 2.5) : 0), PL.yaw + recoilY, PL.roll);
+    cam.rotation.set(PL.pitch + recoilP + climb + hurtT * 0.05 + Math.sin(core.time * 0.45) * 0.03 * dizzy + (exhaleT >= 0 ? Math.sin(core.time * 0.9) * 0.012 * Math.sin(Math.PI * exhaleT / 2.5) : 0), PL.yaw + recoilY, PL.roll);
     const fovT = PL.rifle && aiming ? 45 : 70;
     if (Math.abs(fovNow - fovT) > 0.05) { fovNow += (fovT - fovNow) * Math.min(1, dt * 12); cam.fov = fovNow; cam.updateProjectionMatrix(); }
     torch(dt, core);
@@ -1345,11 +1345,22 @@
   const flags = () => (CT.rpg && CT.rpg.flags) || null;
   function arMag() { const f = flags(); return f && typeof f.arMag === 'number' ? f.arMag : arMagLocal; }
   function setMag(n) { arMagLocal = n; const f = flags(); if (f) f.arMag = n; }
+  // Fire selector: SEMI (one per click) / AUTO (750 rpm while held), saved in the rpg flags.
+  let autoHeat = 0, selT = 0, climb = 0;
+  PL.fireMode = 'semi';
+  function fireModeNow() { const f = flags(); return f && f.arMode === 'auto' ? 'auto' : f ? 'semi' : PL.fireMode; }
   function arReserve() { return CT.rpg && typeof CT.rpg.count === 'function' ? CT.rpg.count('ammo556') || 0 : 0; }
   function rifleUpdate(dt, core, cam) {
     fireCD -= dt; dryK = Math.max(0, dryK - dt * 5); fireK = Math.max(0, fireK - dt * 10); muzzleT -= dt; tracerT -= dt;
     recoilP *= Math.exp(-dt * 9); recoilY *= Math.exp(-dt * 9);
     if (casingSfxT >= 0) { casingSfxT -= dt; if (casingSfxT < 0) sfx('ar_casing'); }
+    PL.fireMode = fireModeNow(); selT = Math.max(0, selT - dt * 4);
+    if (I.fireMode) {
+      const m = PL.fireMode === 'auto' ? 'semi' : 'auto', f = flags(); PL.fireMode = m; if (f) f.arMode = m;
+      selT = 1; sfx('ar_select'); emit('notify', { text: 'Fire mode: ' + m.toUpperCase(), kind: 'info' });
+    }
+    const auto = PL.fireMode === 'auto', trig = auto ? (I.fireHeld || I.fire) : I.fire;
+    if (!(auto && trig)) { autoHeat = Math.max(0, autoHeat - dt * 3); climb *= Math.exp(-dt * 5); }
     aiming = I.block && reloadT < 0 && !sprinting && dodgeT < 0 && drinkT < 0 && PL.alive;
     const res = arReserve();
     if (reloadT >= 0) {                                         // mag out, a fresh mag in at 1.3 s, the charging handle, done at 2.2 s
@@ -1357,17 +1368,22 @@
       if (r0 < 1.3 && reloadT >= 1.3) { const n = Math.min(AR_MAG - arMag(), res); if (n > 0 && CT.rpg && CT.rpg.take && CT.rpg.take('ammo556', n)) setMag(arMag() + n); }
       if (reloadT >= 2.2) reloadT = -1;
     } else if ((I.reload || (I.fire && arMag() <= 0 && res > 0)) && arMag() < AR_MAG && res > 0 && drinkT < 0) { reloadT = 0; sfx('ar_reload'); }
-    if (I.fire && reloadT < 0 && fireCD <= 0 && drinkT < 0 && dodgeT < 0) {
-      fireCD = 0.09;
-      if (arMag() <= 0) { sfx('ar_dry'); dryK = 1; }
-      else { setMag(arMag() - 1); shoot(core, cam); }
+    if (trig && reloadT < 0 && fireCD <= 0 && drinkT < 0 && dodgeT < 0) {
+      fireCD = auto ? 0.08 : 0.09;
+      if (arMag() <= 0) { if (I.fire) { sfx('ar_dry'); dryK = 1; } }
+      else { setMag(arMag() - 1); shoot(core, cam, auto); if (auto) autoHeat = Math.min(1, autoHeat + 0.09); }
     }
     PL.ammo.mag = arMag(); PL.ammo.reserve = arReserve();
     I.attack = false; I.heavy = 0; I.heavyRelease = false; I.block = false;   // no melee while the rifle is out
   }
-  function shoot(core, cam) {
+  function shotEnv() {
+    const pois = (CT.world && CT.world.pois) || C.POIS;
+    for (let i = 0; i < pois.length; i++) { const o = pois[i]; if (Math.hypot(o.x - PL.pos.x, o.z - PL.pos.z) < o.radius) return o.type === 'citadel' || o.type === 'ruins' ? 'citadel' : o.type === 'village' || o.type === 'camp' ? 'village' : 'field'; }
+    return 'field';
+  }
+  function shoot(core, cam, auto) {
     camVectors();
-    const w = curW || {}, spread = aiming ? 0.0025 : 0.014 + Math.min(0.02, hspeed * 0.003);
+    const w = curW || {}, spread = (aiming ? 0.0025 : 0.014 + Math.min(0.02, hspeed * 0.003)) + autoHeat * (aiming ? 0.02 : 0.035);
     DIR.set(FWD.x + (rnd() - 0.5) * spread * 2, FWD.y + (rnd() - 0.5) * spread * 2, FWD.z + (rnd() - 0.5) * spread * 2).normalize();
     const org = cam.position;
     let dist = AR_RANGE, hit = null;
@@ -1404,9 +1420,10 @@
       const o = L[i]; if (!o || o.dead || o.alive === false || o.state === 'dormant' || !o.pos) continue;
       if (Math.hypot(o.pos.x - PL.pos.x, o.pos.z - PL.pos.z) < 60) { o.aggro = true; if (o.state === 'idle' || o.state === 'wander' || o.state === 'patrol' || o.state === 'return') o.state = 'chase'; }
     }
-    recoilP += aiming ? 0.02 : 0.034; recoilY += (rnd() - 0.5) * 0.012; fireK = 1; muzzleT = 0.06; casingN++; casingSfxT = 0.32;
+    if (auto) { climb = Math.min(0.28, climb + (aiming ? 0.009 : 0.014)); recoilP += aiming ? 0.008 : 0.012; recoilY += (rnd() - 0.5) * 0.01; }   // the muzzle creeps up under sustained fire
+    else { recoilP += aiming ? 0.02 : 0.034; recoilY += (rnd() - 0.5) * 0.012; } fireK = 1; muzzleT = 0.06; casingN++; casingSfxT = 0.32;
     core.shake(aiming ? 0.18 : 0.26, 0.12);
-    sfx('ar_shot', { pos: org });
+    sfx('ar_shot', { pos: org, auto, env: shotEnv() });
     emit('shot', { weapon: curW, pos: org });
   }
 
@@ -1555,6 +1572,7 @@
       drawArm(ctx, ARMS.R, Math.round(gx), Math.round(gy), hq, 1, 0, 0, false);
       arToScreen(0, 0, P2); fx0 = X + P2[0]; fy0 = Y + P2[1];
       arToScreen(216, -1, P2); ejx = X + P2[0]; ejy = Y + P2[1];
+      arToScreen(236, 10, P2); { const sx = X + P2[0], sy = Y + P2[1], a = (PL.fireMode === 'auto' ? 0.9 : -0.6) + selT * 0.4; ctx.fillStyle = '#d0a040'; for (let i = 0; i < 7; i++) ctx.fillRect(Math.round(sx + Math.sin(a) * i), Math.round(sy - Math.cos(a) * i), 2, 2); }
     } else {
       const k = (adsK - 0.5) * 2, X = W / 2 + Math.round((ox - rgx) * 0.4), Y = Math.round(H / 2 + (1 - k) * 140 + (oy - rgy) * 0.5 - 2 * fireK);
       ctx.drawImage(RADS.cv, X - RADS.ox, Y - RADS.oy);
@@ -1913,7 +1931,7 @@
   };
 
   // Debug snapshot for tests.
-  PL.debugState = function () { return { atk, atkK, comboIdx, charging, charge, blockT, dodgeT, drinkT, kind: K && K.id, stamina: PL.stamina, exhausted, blade: bladeLevel(), hands: handLevel(), ms: PL.drawMs, lastSave: lastSave && lastSave.id, offhand: PL.offhand, dragT, dragCD, exhaleT, rushT, crashT, dizzy, rifle: PL.rifle, aiming, adsK, reloadT, mag: arMag(), reserve: arReserve() }; };
+  PL.debugState = function () { return { atk, atkK, comboIdx, charging, charge, blockT, dodgeT, drinkT, kind: K && K.id, stamina: PL.stamina, exhausted, blade: bladeLevel(), hands: handLevel(), ms: PL.drawMs, lastSave: lastSave && lastSave.id, offhand: PL.offhand, dragT, dragCD, exhaleT, rushT, crashT, dizzy, rifle: PL.rifle, fireMode: PL.fireMode, autoHeat, climb, aiming, adsK, reloadT, mag: arMag(), reserve: arReserve() }; };
   PL.debugBlood = function (b, h) { bloodOv = b; handsOv = h == null ? b : h; };
   // Freeze a pose for screenshots: type 1 light (idx 0..2), 2 heavy, k = normalised swing time; charge/block/drink via opts.
   PL.debugPose = function (type, idx, k, o) {

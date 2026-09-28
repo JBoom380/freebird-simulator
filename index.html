@@ -83571,6 +83571,80 @@ window.CT = window.CT || {};
   }
   const shift = (f, k) => f.map(([t, v]) => [t, v * k]);
 
+  // ── AR-15 report: baked, layered, 4 variants x 3 environments (cheap to play at 12.5 shots/s) ──
+  // Dry shot = a 2-5 ms broadband crack (a spike + high-passed noise), the body (band-passed noise, 50-120 ms),
+  // a 60-90 Hz thump with a pitch drop, the bolt carrier (two metallic ticks); then tanh saturation.
+  // Environment = 1-2 low-passed slap-back echoes (120-400 ms) + a short diffuse tail.
+  const GUN_ENV = {
+    field:   { echo: [[0.29, 0.13, 1400], [0.52, 0.06, 900]], tail: 0.35, tg: 0.04 },
+    village: { echo: [[0.12, 0.16, 2400], [0.21, 0.09, 1600]], tail: 0.55, tg: 0.07 },
+    citadel: { echo: [[0.16, 0.15, 1800], [0.38, 0.10, 1100]], tail: 1.1, tg: 0.11 },
+  };
+  function gunBuf(ctx, v, env) {
+    const E = GUN_ENV[env] || GUN_ENV.field;
+    return mkBuf(ctx, 'ar_' + env + v, 1.7, (d, sr, ch) => {
+      const r = rng(4201 + v * 97 + (ch ? 31 : 0)), N = Math.floor(0.3 * sr), s = new Float32Array(N);
+      // a. the crack
+      const nc = Math.floor((0.0025 + 0.0015 * r()) * sr), cr = new Float32Array(nc + 8);
+      for (let i = 0; i < cr.length; i++) cr[i] = (r() * 2 - 1) * Math.exp(-i / (nc * 0.35));
+      biq(cr, sr, 'hp', 2200 + r() * 800, 0.7);
+      s[0] += 1.0; s[1] -= 0.7;
+      for (let i = 0; i < cr.length; i++) s[i] += cr[i] * 2.2;
+      // b. the body: band-passed noise with a fast decay, plus the thump
+      const nb = Math.floor(0.12 * sr), bd = new Float32Array(nb), bf = 700 + r() * 500, bdk = (0.018 + 0.012 * r()) * sr;
+      for (let i = 0; i < nb; i++) bd[i] = (r() * 2 - 1) * Math.exp(-i / bdk);
+      biq(bd, sr, 'bp', bf, 0.8); biq(bd, sr, 'bp', bf * 2.3, 0.9);
+      for (let i = 0; i < nb; i++) s[i] += bd[i] * 2.4;
+      const f0 = 88 + r() * 10, f1 = 58 + r() * 6; let ph = 0;
+      for (let i = 0; i < Math.floor(0.16 * sr); i++) {
+        const t = i / sr, f = f1 + (f0 - f1) * Math.exp(-t / 0.035); ph += 2 * Math.PI * f / sr;
+        s[i] += Math.sin(ph) * 0.9 * Math.exp(-t / 0.05) * Math.min(1, t / 0.0015);
+      }
+      // c. the bolt carrier: two quick metallic ticks
+      [[0.028 + 0.004 * r(), 0.16], [0.052 + 0.006 * r(), 0.11]].forEach(([tt, a]) => {
+        const i0 = Math.floor(tt * sr);
+        for (let i = 0; i < Math.floor(0.012 * sr) && i0 + i < N; i++) {
+          const t = i / sr; s[i0 + i] += a * Math.exp(-t / 0.0025) * (Math.sin(2 * Math.PI * 3100 * t) + 0.6 * Math.sin(2 * Math.PI * 5300 * t) + 0.4 * (r() * 2 - 1));
+        }
+      });
+      // e. saturation for the punch
+      sat(s, 1.8);
+      for (let i = 0; i < N; i++) d[i] += s[i] * 0.8;
+      // d. the environment: slap-back echoes (low-passed copies of the dry shot) + a short diffuse tail
+      E.echo.forEach(([tt, g, lp], k) => {
+        const e = Float32Array.from(s); biq(e, sr, 'lp', lp * (0.9 + 0.2 * r()), 0.7); biq(e, sr, 'lp', lp, 0.7);
+        const i0 = Math.floor((tt + (ch ? 0.006 : 0) + (r() - 0.5) * 0.02) * sr);
+        for (let i = 0; i < N && i0 + i < d.length; i++) d[i0 + i] += e[i] * g;
+      });
+      const nt = Math.floor(E.tail * sr), tl = new Float32Array(nt), i1 = Math.floor(0.02 * sr);
+      for (let i = 0; i < nt; i++) tl[i] = (r() * 2 - 1) * Math.exp(-i / (nt * 0.22));
+      biq(tl, sr, 'lp', 1600, 0.7); biq(tl, sr, 'hp', 120, 0.7);
+      for (let i = 0; i < nt && i1 + i < d.length; i++) d[i1 + i] += tl[i] * E.tg * Math.min(1, i / (0.01 * sr));
+      normalize(d, 0.9); fadeEnds(d, sr, 0, 0.2);
+    }, 2);
+  }
+  // Voice steal: at most 5 overlapping reports per context; the oldest fades out in 40 ms (tails overlap naturally).
+  function gunVoice(g, t, buf, lv, rate, lp) {
+    const c = g.ctx, C = cacheOf(c), L = C.gun || (C.gun = []);
+    while (L.length && L[0].end < t) L.shift();
+    if (L.length >= 5) { const o = L.shift(); try { o.v.gain.cancelScheduledValues(t); o.v.gain.setValueAtTime(o.v.gain.value, t); o.v.gain.linearRampToValueAtTime(0, t + 0.04); o.s.stop(t + 0.05); } catch (e) { } }
+    const s = c.createBufferSource(), f = c.createBiquadFilter(), v = c.createGain();
+    s.buffer = buf; s.playbackRate.value = rate; f.type = 'lowpass'; f.frequency.value = lp; f.Q.value = 0.5; v.gain.value = lv;
+    s.connect(f); f.connect(v); v.connect(g.out); s.start(t); s.stop(t + buf.duration / rate + 0.01);
+    L.push({ s, v, end: t + buf.duration / rate });
+  }
+  function brassTink(g, t, f, lv) {                            // one brass case hitting the ground: a ringing tick
+    const c = g.ctx, o = c.createOscillator(), o2 = c.createOscillator(), v = c.createGain();
+    o.type = 'sine'; o2.type = 'sine'; o.frequency.value = f; o2.frequency.value = f * 2.76;
+    v.gain.setValueAtTime(0, t); v.gain.linearRampToValueAtTime(lv, t + 0.001); v.gain.setTargetAtTime(0, t + 0.002, 0.025);
+    o.connect(v); o2.connect(v); outTo(g, v, rr(-0.3, 0.3)); o.start(t); o2.start(t); o.stop(t + 0.2); o2.stop(t + 0.2);
+    const n = noiseThrough(g, t, 0.02, 'highpass', 1); n.f.value = 6000; n.v.setValueAtTime(lv * 0.6, t); n.v.setTargetAtTime(0, t + 0.001, 0.003);
+  }
+  function metalClick(g, t, f, lv, dk) {                       // a hard metallic click (mag catch, bolt, selector)
+    const n = noiseThrough(g, t, 0.06, 'bandpass', 2.5); n.f.value = f; n.v.setValueAtTime(lv, t); n.v.setTargetAtTime(0, t + 0.001, dk || 0.006);
+    tone(g, t, 'square', f * 0.9, f * 0.7, 0.015, lv * 0.12);
+  }
+
   // ── SFX: name -> fn(g, t, opts). Unknown names are no-ops ──────────────────
   let stepN = 0;
   const SFX = {
@@ -83721,24 +83795,24 @@ window.CT = window.CT || {};
       for (let i = 0; i < 5; i++) gore(g, t + 0.3 + i * 0.13, 'glug', 0.32, 0, rr(0.8, 1.0));
       beast(g, t + 1.05, { dur: 0.5, f: [[0, 132], [0.5, 104]], noise: 0.9, nf: 1100, v: [[0, 'ah'], [0.5, 'ah']], lv: 0.2, att: 0.05, rel: 0.2 });
     },
-    ar_shot(g, t) {   // a sharp crack, a punchy low thump, then a valley echo tail
-      const c = noiseThrough(g, t, 0.12, 'highpass', 0.7); c.f.value = 1800; c.v.setValueAtTime(1.0, t); c.v.setTargetAtTime(0, t + 0.002, 0.018);
-      const m = noiseThrough(g, t, 0.35, 'bandpass', 0.8); m.f.setValueAtTime(2400, t); m.f.exponentialRampToValueAtTime(500, t + 0.2); m.v.setValueAtTime(0.7, t); m.v.setTargetAtTime(0, t + 0.004, 0.05);
-      tone(g, t, 'sine', 150, 42, 0.22, 0.9);
-      tone(g, t, 'triangle', 90, 38, 0.18, 0.4);
-      for (let i = 0; i < 3; i++) {   // echoes off the valley walls, darker and quieter each time
-        const s0 = t + 0.18 + i * rr(0.22, 0.34), e = noiseThrough(g, s0, 0.9, 'lowpass', 0.7, i % 2 ? 0.35 : -0.35);
-        e.f.value = 1200 / (i + 1); e.v.setValueAtTime(0, s0); e.v.linearRampToValueAtTime(0.22 / (i + 1), s0 + 0.02); e.v.setTargetAtTime(0, s0 + 0.04, 0.16);
-      }
+    ar_shot(g, t, o) {   // the layered report; +-5% pitch and filter per shot so full auto never loops
+      const v = (Math.random() * 4) | 0, env = GUN_ENV[o.env] ? o.env : 'field';
+      gunVoice(g, t, gunBuf(g.ctx, v, env), o.auto ? 0.82 : 0.95, rr(0.95, 1.05), rr(9000, 14000));
     },
-    ar_dry(g, t) { const n = noiseThrough(g, t, 0.05, 'highpass', 2); n.f.value = 3500; n.v.setValueAtTime(0.35, t); n.v.setTargetAtTime(0, t + 0.002, 0.008); tone(g, t, 'square', 1800, 1200, 0.02, 0.05); },
-    ar_reload(g, t) {   // mag out, mag in (seated), the bolt slams home
-      const click = (s0, f, lv) => { const n = noiseThrough(g, s0, 0.08, 'bandpass', 3); n.f.value = f; n.v.setValueAtTime(lv, s0); n.v.setTargetAtTime(0, s0 + 0.003, 0.015); };
-      click(t + 0.15, 1500, 0.35); swish(g, t + 0.18, 0.2, 400, 900, 300, 0.08);
-      click(t + 1.05, 900, 0.3); click(t + 1.25, 1300, 0.55); tone(g, t + 1.25, 'sine', 180, 90, 0.08, 0.3);
-      click(t + 1.7, 2200, 0.35); click(t + 1.86, 1100, 0.6); tone(g, t + 1.86, 'sine', 220, 80, 0.1, 0.35);
+    ar_dry(g, t) { metalClick(g, t, 3200, 0.5, 0.004); metalClick(g, t + 0.012, 1800, 0.2, 0.005); },
+    ar_select(g, t) { metalClick(g, t, 2600, 0.35, 0.005); metalClick(g, t + 0.03, 4200, 0.18, 0.003); },
+    ar_reload(g, t) {   // the mag release, the empty mag sliding out, the slap-in, the charging-handle rack
+      metalClick(g, t + 0.12, 2400, 0.45); swish(g, t + 0.16, 0.22, 500, 1400, 400, 0.1);
+      gore(g, t + 0.62, 'clang', 0.08, -0.3, 1.8);
+      swish(g, t + 1.0, 0.18, 300, 900, 500, 0.08);
+      metalClick(g, t + 1.22, 900, 0.7, 0.012); tone(g, t + 1.22, 'sine', 160, 70, 0.1, 0.45); metalClick(g, t + 1.25, 2800, 0.3);
+      metalClick(g, t + 1.66, 2000, 0.4); swish(g, t + 1.68, 0.14, 800, 2600, 900, 0.14);
+      metalClick(g, t + 1.84, 1200, 0.75, 0.01); metalClick(g, t + 1.86, 3400, 0.45); tone(g, t + 1.84, 'sine', 210, 80, 0.12, 0.4);
     },
-    ar_casing(g, t) { for (let i = 0; i < 3; i++) { const s0 = t + i * rr(0.06, 0.1); tone(g, s0, 'sine', rr(3800, 5200), rr(3000, 4200), 0.05, 0.08 / (i + 1)); } },
+    ar_casing(g, t) {   // brass tinkles on the ground: 2 or 3 bounces, varied
+      const f = rr(3600, 5200), n = Math.random() < 0.5 ? 2 : 3; let s0 = t, lv = rr(0.1, 0.16);
+      for (let i = 0; i < n; i++) { brassTink(g, s0, f * rr(0.97, 1.03), lv); s0 += rr(0.07, 0.13) * (1 - i * 0.3); lv *= 0.5; }
+    },
     drag(g, t) {   // paper and tobacco crackle over a soft rising inhale
       const n = noiseThrough(g, t, 1.3, 'bandpass', 1.1); n.f.setValueAtTime(500, t); n.f.exponentialRampToValueAtTime(2600, t + 1.0);
       n.v.setValueAtTime(0, t); n.v.linearRampToValueAtTime(0.1, t + 0.5); n.v.linearRampToValueAtTime(0.13, t + 0.95); n.v.setTargetAtTime(0, t + 1.0, 0.06);
@@ -83759,7 +83833,7 @@ window.CT = window.CT || {};
       swish(g, t + 0.12, 0.35, 250, 900, 500, 0.2);
     },
   };
-  const SDUR = { beer: 2.2, ar_shot: 1.8, ar_reload: 2.4, ar_casing: 0.5, drag: 1.6, exhale: 2.2, lighter: 0.8, charge: 1.8, chargeFull: 2.4, gib: 2.6, sever: 1.6, death: 3, drink: 1.8, levelup: 4, discover: 5.5, quest: 3, wolf_howl: 3.6, ghoul_moan: 2.8, troll_bellow: 3, troll_slam: 2, wraith_shriek: 2.6, boss_roar: 4, boss_laugh: 2.5, thunder: 6.5, parry: 2.6, clang: 1.6, orc_roar: 2, orc_die: 2 };
+  const SDUR = { beer: 2.2, ar_shot: 1.8, ar_reload: 2.4, ar_casing: 0.6, ar_select: 0.3, drag: 1.6, exhale: 2.2, lighter: 0.8, charge: 1.8, chargeFull: 2.4, gib: 2.6, sever: 1.6, death: 3, drink: 1.8, levelup: 4, discover: 5.5, quest: 3, wolf_howl: 3.6, ghoul_moan: 2.8, troll_bellow: 3, troll_slam: 2, wraith_shriek: 2.6, boss_roar: 4, boss_laugh: 2.5, thunder: 6.5, parry: 2.6, clang: 1.6, orc_roar: 2, orc_die: 2 };
   const LOOPS = { rain: 1, wind: 1, fire_loop: 1 };
 
   // ── Iron Stallion (vehicle.js): a V8 voice + car one-shots ─────────────────
@@ -96627,7 +96701,7 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
     if (poof) fxPoof(n.pos);
     n.pos.set(v.x, H(v.x, v.z), v.z); n.yawNow = Math.atan2(pp.x - v.x, pp.z - v.z);
     if (poof) fxPoof(n.pos);
-    COMP.vel.set(0, 0, 0); COMP.stuckT = 0;
+    COMP.vel.set(0, 0, 0); COMP.stuckT = 0; COMP.state = 'idle'; COMP.anchor = null; if (COMP.trail) COMP.trail.length = 0;
   }
   npcs.companionSummon = function () {
     const c = comp(), n = COMP.n; if (!c || !n) return false;
@@ -96695,7 +96769,7 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
       n.dist = 0; if (live) compHeal(n, dt, st); fxTick(dt);
       return;
     }
-    if (ride && ride.mode === 'out') { COMP.inCar = false; n.pos.set(ride.x, H(ride.x, ride.z), ride.z); n.yawNow = ride.yaw; COMP.vel.set(0, 0, 0); COMP.moving = true; }
+    if (ride && ride.mode === 'out') { COMP.inCar = false; n.pos.set(ride.x, H(ride.x, ride.z), ride.z); n.yawNow = ride.yaw; COMP.vel.set(0, 0, 0); COMP.moving = true; COMP.state = 'move'; }
     else if (st.following && driving && !ride) {   // riding (no passenger seat available): hidden, carried with the car
       COMP.inCar = true; n.pos.set(pp.x, n.pos.y, pp.z); R.root.visible = false; if (n.spr) n.spr.root.visible = false;
       if (COMP.bubble) COMP.bubble.sp.visible = false;
@@ -96706,7 +96780,7 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
       COMP.inCar = false; const { rx, rz, fx, fz } = playerFrame();
       const v = new T.Vector3(pp.x - rx * 1.8 + fx * 1.5, 0, pp.z - rz * 1.8 + fz * 1.5);
       if (CT.world && CT.world.collide) { const r = CT.world.collide(v, 0.45); if (r) v.copy(r); }
-      n.pos.set(v.x, H(v.x, v.z), v.z); fxPoof(n.pos); COMP.vel.set(0, 0, 0); COMP.moving = true;
+      n.pos.set(v.x, H(v.x, v.z), v.z); fxPoof(n.pos); COMP.vel.set(0, 0, 0); COMP.moving = true; COMP.state = 'move';
     }
     if (ride && ride.mode === 'walk') { /* heading for the passenger door */ }
     else if (st.following && COMP.task) speed = compTask(n, dt, pp, st);
@@ -96820,7 +96894,7 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
     if (sp > 1.5 && moved < sp * 0.2) COMP.stuckT += dt; else COMP.stuckT = Math.max(0, COMP.stuckT - dt * 2);
     return moved;
   }
-  function taskDone(line) { COMP.task = null; if (line) speak(line, true); }
+  function taskDone(line) { COMP.task = null; COMP.state = 'move'; if (line) speak(line, true); }
   function compTask(n, dt, pp, st) {
     const k = COMP.task; k.t += dt;
     if (k.t > 45 || COMP.stuckT > 5) { COMP.stuckT = 0; return taskDone('I give up. It\'s not worth it.'), 0; }
@@ -96947,74 +97021,74 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
     if (CT.world && CT.world.waterAt && CT.world.waterAt(v.x, v.z) > 0.6) return true;
     return false;
   }
+  // TRAIL follow (a Skyrim follower): the player's walked path is recorded as breadcrumbs (a point every 0.5 m of movement,
+  // never the camera). Her target is the crumb 3.5 m back along that path (7 m in a fight); she walks the crumbs, so she takes
+  // the corners the player took. Once she settles she does NOTHING until the player's position has moved more than 1.5 m:
+  // turning or looking around never moves her. Idle she faces the player; moving she faces where she walks.
   function compFollow(n, dt, pp) {
-    const { fx, fz, rx, rz } = playerFrame();
-    const dxp = n.pos.x - pp.x, dzp = n.pos.z - pp.z, dp = Math.hypot(dxp, dzp);
-    // teleport only when far away or stuck: to her behind spot (out of view), in a puff of smoke
-    if (dp > 60 || COMP.stuckT > 4) {
-      const v = slotAt(pp, fx, fz, rx, rz, COMP.side, SLOT.tAng, 6);   // out of sight, behind-left
-      if (CT.world && CT.world.collide) { const r = CT.world.collide(_w.set(v.x, 0, v.z), 0.45); if (r) v.set(r.x, 0, r.z); }
-      fxPoof(n.pos); n.pos.set(v.x, H(v.x, v.z), v.z); fxPoof(n.pos);
-      COMP.vel.set(0, 0, 0); COMP.stuckT = 0; COMP.moving = true; return 0;
-    }
-    // side: combat -> away from the nearest monster; else left, mirrored when blocked (re-checked twice a second)
-    const mon = CT.monsters && CT.monsters.nearest ? CT.monsters.nearest(pp, 15) : null;
-    const combat = !!(mon && mon.alive !== false && !mon.dead);
-    COMP.sideT = (COMP.sideT || 0) - dt;
-    if (COMP.sideT <= 0) {
-      COMP.sideT = 0.5;
-      let want = -1;
-      if (combat) want = ((mon.pos.x - pp.x) * rx + (mon.pos.z - pp.z) * rz) > 0 ? -1 : 1;
-      const ang = combat ? SLOT.cAng : SLOT.ang, dist = combat ? SLOT.cDist : SLOT.dist;
-      if (slotBlocked(slotAt(pp, fx, fz, rx, rz, want, ang, dist), pp) && !slotBlocked(slotAt(pp, fx, fz, rx, rz, -want, ang, dist), pp)) want = -want;
-      COMP.side = want;
-    }
-    // the player's measured velocity (smoothed); the slot leads it so she keeps pace instead of trailing out of frame
+    // the player's measured velocity (smoothed)
     if (!COMP.pv) COMP.pv = new T.Vector3();
     if (COMP.fpp && dt > 0) { const vx = (pp.x - COMP.fpp.x) / dt, vz = (pp.z - COMP.fpp.z) / dt, ok = Math.hypot(vx, vz) < 20;
-      if (ok) { COMP.pv.x += (vx - COMP.pv.x) * Math.min(1, dt * 5); COMP.pv.z += (vz - COMP.pv.z) * Math.min(1, dt * 5); } } else if (!COMP.fpp) COMP.fpp = new T.Vector3();
+      if (ok) { COMP.pv.x += (vx - COMP.pv.x) * Math.min(1, dt * 5); COMP.pv.z += (vz - COMP.pv.z) * Math.min(1, dt * 5); } }
+    // the breadcrumb trail; a jump (teleport, respawn, car exit) restarts it
+    const TR = COMP.trail || (COMP.trail = []);
+    if (COMP.fpp && Math.hypot(pp.x - COMP.fpp.x, pp.z - COMP.fpp.z) > 8) { TR.length = 0; COMP.pv.set(0, 0, 0); }
+    if (!COMP.fpp) COMP.fpp = new T.Vector3();
     COMP.fpp.copy(pp); COMP.pSpeed = Math.hypot(COMP.pv.x, COMP.pv.z);
-    COMP.stillT = COMP.pSpeed < 0.6 ? (COMP.stillT || 0) + dt : 0;
-    const stopped = COMP.stillT > 0.7;
-    const sAng = combat ? SLOT.cAng : stopped ? SLOT.sAng : SLOT.ang, sDist = combat ? SLOT.cDist : stopped ? SLOT.sDist : SLOT.dist;
-    const tgt = slotAt(pp, fx, fz, rx, rz, COMP.side, sAng, sDist);
-    tgt.x += COMP.pv.x * 0.1; tgt.z += COMP.pv.z * 0.1;   // a touch of lead so she keeps pace at the shoulder
-    const dx = tgt.x - n.pos.x, dz = tgt.z - n.pos.z, d = Math.hypot(dx, dz);
-    // dead zone only while the player is still: start beyond 1.5 m from the slot, stop within 0.4 m
-    const pMoving = COMP.pSpeed > 1.0;
-    if (!COMP.moving && (d > 1.5 || (pMoving && d > 0.5))) COMP.moving = true;
-    if (COMP.moving && d < 0.4 && !pMoving) COMP.moving = false;
-    let speed = 0, dirx = 0, dirz = 0;
-    if (COMP.moving && d > 1e-3) {
-      const base = COMP.pSpeed;
-      speed = d > 10 ? Math.max(base + 3, 8.5) : d > 5 ? Math.max(base + 2, 5.6) : clamp(base + (d - 0.4) * 1.1, 0, base + 1.6);
-      if (!pMoving) speed = Math.min(speed, d > 5 ? speed : 1.6);   // stepping up beside a standing player is a stroll
-      dirx = dx / d; dirz = dz / d;
-      // arc around the player instead of cutting through: if the straight line passes the player within 2 m, go tangentially
-      const ax = dxp / (dp || 1), az = dzp / (dp || 1), bx = (tgt.x - pp.x), bz = (tgt.z - pp.z), bl = Math.hypot(bx, bz) || 1;
-      const t = clamp(((pp.x - n.pos.x) * dx + (pp.z - n.pos.z) * dz) / (d * d), 0, 1);
-      const cx = n.pos.x + dx * t - pp.x, cz = n.pos.z + dz * t - pp.z;
-      const herSide = dxp * rx + dzp * rz, slotSide = (tgt.x - pp.x) * rx + (tgt.z - pp.z) * rz;
-      if (Math.hypot(cx, cz) < 1.3 && dp < 7 && herSide * slotSide < 0) {   // only when the straight line would cross the player
-        const cr = ax * (bz / bl) - az * (bx / bl), sg = cr >= 0 ? 1 : -1;       // rotate toward the slot's side
-        const tx = -az * sg, tz = ax * sg, R0 = Math.max(2.6, dp);
-        const k = (R0 - dp) * 0.8;                                               // hold the arc radius
-        dirx = tx + ax * k; dirz = tz + az * k; const l = Math.hypot(dirx, dirz) || 1; dirx /= l; dirz /= l;
-      }
+    const lastC = TR[TR.length - 1];
+    if (!lastC || Math.hypot(pp.x - lastC.x, pp.z - lastC.z) >= 0.5) { TR.push({ x: pp.x, z: pp.z }); if (TR.length > 240) TR.shift(); }
+    const mon = CT.monsters && CT.monsters.inCombat && CT.monsters.nearest ? CT.monsters.nearest(pp, 15) : null;   // a real fight, not a passer-by
+    const combat = !!(mon && mon.alive !== false && !mon.dead);
+    const back = combat ? 7 : 3.5;
+    // the crumb `back` metres behind the player along the walked path
+    let ti = TR.length - 1, acc = Math.hypot(pp.x - TR[ti].x, pp.z - TR[ti].z);
+    while (ti > 0 && acc < back) { acc += Math.hypot(TR[ti].x - TR[ti - 1].x, TR[ti].z - TR[ti - 1].z); ti--; }
+    const tgt = TR[ti];
+    const dxp = n.pos.x - pp.x, dzp = n.pos.z - pp.z, dp = Math.hypot(dxp, dzp);
+    // far or stuck: reappear at the trail point behind the player (out of view), in a puff of smoke
+    if (dp > 60 || COMP.stuckT > 4) {
+      const v = new T.Vector3(tgt.x, 0, tgt.z);
+      if (v.distanceTo(_w.set(pp.x, 0, pp.z)) < 2) { const { fx, fz } = playerFrame(); v.set(pp.x - fx * back, 0, pp.z - fz * back); }
+      if (CT.world && CT.world.collide) { const r = CT.world.collide(_w.set(v.x, 0, v.z), 0.45); if (r) v.set(r.x, 0, r.z); }
+      fxPoof(n.pos); n.pos.set(v.x, H(v.x, v.z), v.z); fxPoof(n.pos);
+      COMP.vel.set(0, 0, 0); COMP.stuckT = 0; COMP.state = 'idle'; COMP.anchor = pp.clone(); return 0;
     }
-    _v.set(dirx * speed, 0, dirz * speed);
-    COMP.vel.lerp(_v, Math.min(1, dt * (speed > 0 ? 4 : 6)));   // ease in and out
-    if (!COMP.moving && COMP.vel.lengthSq() < 0.02) COMP.vel.set(0, 0, 0);
+    // idle: stay exactly where she is until the player has walked more than 1.5 m (or a fight comes to her)
+    if (COMP.state !== 'move') {
+      if (!COMP.anchor) COMP.anchor = pp.clone();
+      const walkedOff = Math.hypot(pp.x - COMP.anchor.x, pp.z - COMP.anchor.z) > 1.5;
+      if (!walkedOff && !(combat && dp < 4.5)) {
+        COMP.vel.set(0, 0, 0);
+        if (dp > 0.5) turnTo(n, Math.atan2(-dxp, -dzp), dt, 2.5);   // idling: she faces the player
+        return 0;
+      }
+      COMP.state = 'move';
+    }
+    // moving: walk the crumbs from the one nearest to her toward the target
+    let best = ti, bd = 1e9;
+    for (let i = Math.max(0, ti - 80); i <= ti; i++) { const d = Math.hypot(TR[i].x - n.pos.x, TR[i].z - n.pos.z); if (d < bd) { bd = d; best = i; } }
+    const wp = bd > 3 || best >= ti ? TR[best] : TR[best + 1];
+    let pathD = bd; for (let i = best; i < ti; i++) pathD += Math.hypot(TR[i + 1].x - TR[i].x, TR[i + 1].z - TR[i].z);
+    const pMoving = COMP.pSpeed > 0.8, dT = Math.hypot(tgt.x - n.pos.x, tgt.z - n.pos.z);
+    // arrived behind a standing player: settle (and stay settled while he turns)
+    if (!pMoving && dT < 0.5) { COMP.state = 'idle'; COMP.anchor = pp.clone(); COMP.vel.set(0, 0, 0); return 0; }
+    // pace: the player's speed (eased); jog beyond 6 m of path, run beyond 12 m; a stroll to a standing player
+    const base = COMP.pSpeed;
+    let speed = pathD > 12 ? Math.max(base + 3, 8.5) : pathD > 6 ? Math.max(base + 1.5, 5.6)
+      : pMoving ? clamp(base + (pathD - 0.5) * 0.6, 0, base + 1.2) : clamp(0.6 + pathD * 0.8, 0, 1.8);
+    let wx = wp.x - n.pos.x, wz = wp.z - n.pos.z, wl = Math.hypot(wx, wz);
+    if (wl < 0.05) { wx = tgt.x - n.pos.x; wz = tgt.z - n.pos.z; wl = Math.hypot(wx, wz); }
+    if (wl < 0.02) speed = 0;
+    _v.set(wl > 0 ? wx / wl * speed : 0, 0, wl > 0 ? wz / wl * speed : 0);
+    COMP.vel.lerp(_v, Math.min(1, dt * 4));   // ease in and out
     const ox = n.pos.x, oz = n.pos.z;
     n.pos.x += COMP.vel.x * dt; n.pos.z += COMP.vel.z * dt;
     const qx = n.pos.x - pp.x, qz = n.pos.z - pp.z, q = Math.hypot(qx, qz);
-    if (q < 1.4 && q > 1e-3) { n.pos.x = pp.x + qx / q * 1.4; n.pos.z = pp.z + qz / q * 1.4; }
+    if (q < 1.4 && q > 1e-3) { n.pos.x = pp.x + qx / q * 1.4; n.pos.z = pp.z + qz / q * 1.4; }   // personal space
     if (CT.world && CT.world.collide) { _w.set(n.pos.x, 0, n.pos.z); const r = CT.world.collide(_w, 0.4); if (r) { n.pos.x = r.x; n.pos.z = r.z; } }
     const moved = dt > 0 ? Math.hypot(n.pos.x - ox, n.pos.z - oz) / dt : 0;
     if (speed > 1.5 && moved < speed * 0.2) COMP.stuckT += dt; else COMP.stuckT = Math.max(0, COMP.stuckT - dt * 2);
-    if (moved > 0.5) turnTo(n, Math.atan2(COMP.vel.x, COMP.vel.z), dt, 8);
-    else if (stopped && !combat) turnTo(n, Math.atan2(fx, fz), dt, 3);   // idling beside the player, facing the same way
-    else if (dp < 12) turnTo(n, Math.atan2(-dxp, -dzp), dt, 3);
+    if (moved > 0.3) turnTo(n, Math.atan2(COMP.vel.x, COMP.vel.z), dt, 8);   // she faces where she walks
     return moved;
   }
   // ── Heal: toss the player a lit smoke ──────────────────────────────────────
@@ -100639,7 +100713,7 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
 
   // ── State ──────────────────────────────────────────────────────────────────
   let CORE = null, ready = false, curW = null, kindName = '';
-  const I = { moveX: 0, moveY: 0, lookDX: 0, lookDY: 0, sprint: false, jump: false, attack: false, heavy: 0, heavyRelease: false, block: false, dodge: false, torch: false, usePotion: false, offhand1: false, offhand2: false, offhandCycle: false, fire: false, reload: false };
+  const I = { moveX: 0, moveY: 0, lookDX: 0, lookDY: 0, sprint: false, jump: false, attack: false, heavy: 0, heavyRelease: false, block: false, dodge: false, torch: false, usePotion: false, offhand1: false, offhand2: false, offhandCycle: false, fire: false, reload: false, fireMode: false, fireHeld: false };
   let fakeHeavy = 0;
   let atk = 0, atkK = 0, atkDur = 1, comboIdx = 0, comboTimer = 0, hitDone = false, buffered = false, whooshed = false, swingId = 0, heavyCharge = 0;
   let charging = false, charge = 0, fullFx = false, blockT = 0, guardBreakT = 0, blockKick = 0, parryT = 0, parryBurst = false;
@@ -100667,11 +100741,11 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
     const s = (test && c.state) || core.input || {};
     I.moveX = +s.moveX || 0; I.moveY = +s.moveY || 0; I.lookDX = +s.lookDX || 0; I.lookDY = +s.lookDY || 0;
     I.sprint = !!s.sprint; I.jump = !!s.jump; I.attack = !!s.attack; I.heavy = +s.heavy || 0; I.heavyRelease = !!s.heavyRelease;
-    I.block = !!s.block; I.dodge = !!s.dodge; I.torch = !!s.torch; I.usePotion = !!s.usePotion; I.offhand1 = !!s.offhand1; I.offhand2 = !!s.offhand2; I.offhandCycle = !!s.offhandCycle; I.fire = !!s.fire; I.reload = !!s.reload;
+    I.block = !!s.block; I.dodge = !!s.dodge; I.torch = !!s.torch; I.usePotion = !!s.usePotion; I.offhand1 = !!s.offhand1; I.offhand2 = !!s.offhand2; I.offhandCycle = !!s.offhandCycle; I.fire = !!s.fire; I.reload = !!s.reload; I.fireMode = !!s.fireMode; I.fireHeld = !!s.fireHeld;
     if (test) {                                                // controls absent: honour the debug flags, pressed flags last one frame
       if (c._forceAttack) { c._forceAttack = false; I.attack = true; }
       if (c._forceHeavy) { c._forceHeavy = false; fakeHeavy = 0.001; }
-      if (c.state && c.state !== core.input) { const q = c.state; q.attack = q.jump = q.dodge = q.torch = q.usePotion = q.heavyRelease = q.interact = q.offhand1 = q.offhand2 = q.offhandCycle = q.fire = q.reload = false; q.lookDX = q.lookDY = 0; }
+      if (c.state && c.state !== core.input) { const q = c.state; q.attack = q.jump = q.dodge = q.torch = q.usePotion = q.heavyRelease = q.interact = q.offhand1 = q.offhand2 = q.offhandCycle = q.fire = q.reload = q.fireMode = false; q.lookDX = q.lookDY = 0; }
     }
     if (fakeHeavy > 0) { fakeHeavy += dt; I.heavy = fakeHeavy; if (fakeHeavy >= 1.1) { I.heavy = 0; I.heavyRelease = true; fakeHeavy = 0; } }
   }
@@ -101026,7 +101100,7 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
     PL.roll = Math.sin(bobPh) * 0.008 * bobAmp + lean + Math.sin(core.time * 0.7) * 0.0436 * dizzy;
     cam.position.set(PL.pos.x, PL.pos.y + P.eye + (Math.abs(Math.sin(bobPh)) - 0.5) * 0.07 * bobAmp - dip - (charging ? charge * 0.05 : 0), PL.pos.z);
     if (exhaleT >= 0) { const k = Math.sin(Math.PI * exhaleT / 2.5); PL.roll += Math.sin(core.time * 1.3) * 0.016 * k; }
-    cam.rotation.set(PL.pitch + recoilP + hurtT * 0.05 + Math.sin(core.time * 0.45) * 0.03 * dizzy + (exhaleT >= 0 ? Math.sin(core.time * 0.9) * 0.012 * Math.sin(Math.PI * exhaleT / 2.5) : 0), PL.yaw + recoilY, PL.roll);
+    cam.rotation.set(PL.pitch + recoilP + climb + hurtT * 0.05 + Math.sin(core.time * 0.45) * 0.03 * dizzy + (exhaleT >= 0 ? Math.sin(core.time * 0.9) * 0.012 * Math.sin(Math.PI * exhaleT / 2.5) : 0), PL.yaw + recoilY, PL.roll);
     const fovT = PL.rifle && aiming ? 45 : 70;
     if (Math.abs(fovNow - fovT) > 0.05) { fovNow += (fovT - fovNow) * Math.min(1, dt * 12); cam.fov = fovNow; cam.updateProjectionMatrix(); }
     torch(dt, core);
@@ -101073,11 +101147,22 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
   const flags = () => (CT.rpg && CT.rpg.flags) || null;
   function arMag() { const f = flags(); return f && typeof f.arMag === 'number' ? f.arMag : arMagLocal; }
   function setMag(n) { arMagLocal = n; const f = flags(); if (f) f.arMag = n; }
+  // Fire selector: SEMI (one per click) / AUTO (750 rpm while held), saved in the rpg flags.
+  let autoHeat = 0, selT = 0, climb = 0;
+  PL.fireMode = 'semi';
+  function fireModeNow() { const f = flags(); return f && f.arMode === 'auto' ? 'auto' : f ? 'semi' : PL.fireMode; }
   function arReserve() { return CT.rpg && typeof CT.rpg.count === 'function' ? CT.rpg.count('ammo556') || 0 : 0; }
   function rifleUpdate(dt, core, cam) {
     fireCD -= dt; dryK = Math.max(0, dryK - dt * 5); fireK = Math.max(0, fireK - dt * 10); muzzleT -= dt; tracerT -= dt;
     recoilP *= Math.exp(-dt * 9); recoilY *= Math.exp(-dt * 9);
     if (casingSfxT >= 0) { casingSfxT -= dt; if (casingSfxT < 0) sfx('ar_casing'); }
+    PL.fireMode = fireModeNow(); selT = Math.max(0, selT - dt * 4);
+    if (I.fireMode) {
+      const m = PL.fireMode === 'auto' ? 'semi' : 'auto', f = flags(); PL.fireMode = m; if (f) f.arMode = m;
+      selT = 1; sfx('ar_select'); emit('notify', { text: 'Fire mode: ' + m.toUpperCase(), kind: 'info' });
+    }
+    const auto = PL.fireMode === 'auto', trig = auto ? (I.fireHeld || I.fire) : I.fire;
+    if (!(auto && trig)) { autoHeat = Math.max(0, autoHeat - dt * 3); climb *= Math.exp(-dt * 5); }
     aiming = I.block && reloadT < 0 && !sprinting && dodgeT < 0 && drinkT < 0 && PL.alive;
     const res = arReserve();
     if (reloadT >= 0) {                                         // mag out, a fresh mag in at 1.3 s, the charging handle, done at 2.2 s
@@ -101085,17 +101170,22 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
       if (r0 < 1.3 && reloadT >= 1.3) { const n = Math.min(AR_MAG - arMag(), res); if (n > 0 && CT.rpg && CT.rpg.take && CT.rpg.take('ammo556', n)) setMag(arMag() + n); }
       if (reloadT >= 2.2) reloadT = -1;
     } else if ((I.reload || (I.fire && arMag() <= 0 && res > 0)) && arMag() < AR_MAG && res > 0 && drinkT < 0) { reloadT = 0; sfx('ar_reload'); }
-    if (I.fire && reloadT < 0 && fireCD <= 0 && drinkT < 0 && dodgeT < 0) {
-      fireCD = 0.09;
-      if (arMag() <= 0) { sfx('ar_dry'); dryK = 1; }
-      else { setMag(arMag() - 1); shoot(core, cam); }
+    if (trig && reloadT < 0 && fireCD <= 0 && drinkT < 0 && dodgeT < 0) {
+      fireCD = auto ? 0.08 : 0.09;
+      if (arMag() <= 0) { if (I.fire) { sfx('ar_dry'); dryK = 1; } }
+      else { setMag(arMag() - 1); shoot(core, cam, auto); if (auto) autoHeat = Math.min(1, autoHeat + 0.09); }
     }
     PL.ammo.mag = arMag(); PL.ammo.reserve = arReserve();
     I.attack = false; I.heavy = 0; I.heavyRelease = false; I.block = false;   // no melee while the rifle is out
   }
-  function shoot(core, cam) {
+  function shotEnv() {
+    const pois = (CT.world && CT.world.pois) || C.POIS;
+    for (let i = 0; i < pois.length; i++) { const o = pois[i]; if (Math.hypot(o.x - PL.pos.x, o.z - PL.pos.z) < o.radius) return o.type === 'citadel' || o.type === 'ruins' ? 'citadel' : o.type === 'village' || o.type === 'camp' ? 'village' : 'field'; }
+    return 'field';
+  }
+  function shoot(core, cam, auto) {
     camVectors();
-    const w = curW || {}, spread = aiming ? 0.0025 : 0.014 + Math.min(0.02, hspeed * 0.003);
+    const w = curW || {}, spread = (aiming ? 0.0025 : 0.014 + Math.min(0.02, hspeed * 0.003)) + autoHeat * (aiming ? 0.02 : 0.035);
     DIR.set(FWD.x + (rnd() - 0.5) * spread * 2, FWD.y + (rnd() - 0.5) * spread * 2, FWD.z + (rnd() - 0.5) * spread * 2).normalize();
     const org = cam.position;
     let dist = AR_RANGE, hit = null;
@@ -101132,9 +101222,10 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
       const o = L[i]; if (!o || o.dead || o.alive === false || o.state === 'dormant' || !o.pos) continue;
       if (Math.hypot(o.pos.x - PL.pos.x, o.pos.z - PL.pos.z) < 60) { o.aggro = true; if (o.state === 'idle' || o.state === 'wander' || o.state === 'patrol' || o.state === 'return') o.state = 'chase'; }
     }
-    recoilP += aiming ? 0.02 : 0.034; recoilY += (rnd() - 0.5) * 0.012; fireK = 1; muzzleT = 0.06; casingN++; casingSfxT = 0.32;
+    if (auto) { climb = Math.min(0.28, climb + (aiming ? 0.009 : 0.014)); recoilP += aiming ? 0.008 : 0.012; recoilY += (rnd() - 0.5) * 0.01; }   // the muzzle creeps up under sustained fire
+    else { recoilP += aiming ? 0.02 : 0.034; recoilY += (rnd() - 0.5) * 0.012; } fireK = 1; muzzleT = 0.06; casingN++; casingSfxT = 0.32;
     core.shake(aiming ? 0.18 : 0.26, 0.12);
-    sfx('ar_shot', { pos: org });
+    sfx('ar_shot', { pos: org, auto, env: shotEnv() });
     emit('shot', { weapon: curW, pos: org });
   }
 
@@ -101283,6 +101374,7 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
       drawArm(ctx, ARMS.R, Math.round(gx), Math.round(gy), hq, 1, 0, 0, false);
       arToScreen(0, 0, P2); fx0 = X + P2[0]; fy0 = Y + P2[1];
       arToScreen(216, -1, P2); ejx = X + P2[0]; ejy = Y + P2[1];
+      arToScreen(236, 10, P2); { const sx = X + P2[0], sy = Y + P2[1], a = (PL.fireMode === 'auto' ? 0.9 : -0.6) + selT * 0.4; ctx.fillStyle = '#d0a040'; for (let i = 0; i < 7; i++) ctx.fillRect(Math.round(sx + Math.sin(a) * i), Math.round(sy - Math.cos(a) * i), 2, 2); }
     } else {
       const k = (adsK - 0.5) * 2, X = W / 2 + Math.round((ox - rgx) * 0.4), Y = Math.round(H / 2 + (1 - k) * 140 + (oy - rgy) * 0.5 - 2 * fireK);
       ctx.drawImage(RADS.cv, X - RADS.ox, Y - RADS.oy);
@@ -101641,7 +101733,7 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
   };
 
   // Debug snapshot for tests.
-  PL.debugState = function () { return { atk, atkK, comboIdx, charging, charge, blockT, dodgeT, drinkT, kind: K && K.id, stamina: PL.stamina, exhausted, blade: bladeLevel(), hands: handLevel(), ms: PL.drawMs, lastSave: lastSave && lastSave.id, offhand: PL.offhand, dragT, dragCD, exhaleT, rushT, crashT, dizzy, rifle: PL.rifle, aiming, adsK, reloadT, mag: arMag(), reserve: arReserve() }; };
+  PL.debugState = function () { return { atk, atkK, comboIdx, charging, charge, blockT, dodgeT, drinkT, kind: K && K.id, stamina: PL.stamina, exhausted, blade: bladeLevel(), hands: handLevel(), ms: PL.drawMs, lastSave: lastSave && lastSave.id, offhand: PL.offhand, dragT, dragCD, exhaleT, rushT, crashT, dizzy, rifle: PL.rifle, fireMode: PL.fireMode, autoHeat, climb, aiming, adsK, reloadT, mag: arMag(), reserve: arReserve() }; };
   PL.debugBlood = function (b, h) { bloodOv = b; handsOv = h == null ? b : h; };
   // Freeze a pose for screenshots: type 1 light (idx 0..2), 2 heavy, k = normalised swing time; charge/block/drink via opts.
   PL.debugPose = function (type, idx, k, o) {
@@ -101661,15 +101753,15 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
   const W = 1280, H = 720, TAU = Math.PI * 2;
   const LS_SENS = 'crimsonThrone.sens', LS_INV = 'crimsonThrone.invertY';
   const HEAVY_MOUSE = 0.22, HEAVY_TOUCH = 0.25, DTAP = 0.25, STICK_R = 110, DEAD = 0.15, TOUCH_SENS = 0.006;
-  const PRESSED = ['jump', 'attack', 'heavyRelease', 'dodge', 'interact', 'torch', 'inventory', 'map', 'pause', 'usePotion', 'offhand1', 'offhand2', 'offhandCycle', 'fire', 'reload', 'camToggle', 'horn', 'vehExit'];
+  const PRESSED = ['jump', 'attack', 'heavyRelease', 'dodge', 'interact', 'torch', 'inventory', 'map', 'pause', 'usePotion', 'offhand1', 'offhand2', 'offhandCycle', 'fire', 'reload', 'fireMode', 'camToggle', 'horn', 'vehExit'];
   const GAME_CODES = new Set(['Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyA', 'KeyS', 'KeyD',
-    'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'KeyE', 'KeyT', 'KeyI', 'KeyM', 'KeyQ', 'KeyR', 'Escape', 'Digit1', 'Digit2', 'KeyV', 'KeyH']);
+    'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'KeyE', 'KeyT', 'KeyI', 'KeyM', 'KeyQ', 'KeyR', 'Escape', 'Digit1', 'Digit2', 'KeyV', 'KeyH', 'KeyB']);
   const DIR_OF = { KeyW: 'u', ArrowUp: 'u', KeyS: 'd', ArrowDown: 'd', KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r' };
   const now = () => performance.now() / 1000;
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
   const state = { moveX: 0, moveY: 0, lookDX: 0, lookDY: 0, sprint: false, jump: false, attack: false, heavy: 0, heavyRelease: false,
-    block: false, dodge: false, interact: false, torch: false, inventory: false, map: false, pause: false, usePotion: false, offhand1: false, offhand2: false, offhandCycle: false, fire: false, reload: false,
+    block: false, dodge: false, interact: false, torch: false, inventory: false, map: false, pause: false, usePotion: false, offhand1: false, offhand2: false, offhandCycle: false, fire: false, reload: false, fireMode: false, fireHeld: false,
     throttle: 0, brakeAxis: 0, handbrake: false, boost: false, camToggle: false, horn: false, vehExit: false };   // the last row drives the Iron Stallion (vehicle.js)
   const driving = () => !!(CT.vehicle && CT.vehicle.driving);
   const pend = {}; PRESSED.forEach(k => (pend[k] = false));
@@ -101714,6 +101806,7 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
       case 'KeyT': pend.torch = true; break;
       case 'Digit1': case 'Numpad1': pend.offhand1 = true; break;
       case 'Digit2': case 'Numpad2': pend.offhand2 = true; break;
+      case 'KeyB': if (rifle()) pend.fireMode = true; break;
       case 'Tab': case 'KeyI': pend.inventory = true; break;
       case 'KeyM': pend.map = true; break;
       case 'Escape': pend.pause = true; break;
@@ -101729,9 +101822,10 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
   const mouseLive = () => M.locked || lockRefused || (core && core.isTouch);
   function onMouseDown(e) {
     if (!inPlay() || !mouseLive()) return;
-    if (e.button === 0) { if (rifle()) pend.fire = true; else press(ch.mouse); } else if (e.button === 2) rmb = true;
+    if (e.button === 0) { lmb = true; if (rifle()) pend.fire = true; else press(ch.mouse); } else if (e.button === 2) rmb = true;
   }
-  function onMouseUp(e) { if (e.button === 0) release(ch.mouse); else if (e.button === 2) rmb = false; }
+  let lmb = false;
+  function onMouseUp(e) { if (e.button === 0) { lmb = false; release(ch.mouse); } else if (e.button === 2) rmb = false; }
   function onMouseMove(e) {
     if (!inPlay() || !(M.locked || lockRefused)) return;
     let x = e.movementX || 0, y = e.movementY || 0;
@@ -101756,6 +101850,7 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
     { id: 'dodge', label: 'DODGE', r: 56, kind: 'press', key: 'dodge', ring: 178, ang: 226 },
     { id: 'jump', label: 'JUMP', r: 56, kind: 'press', key: 'jump', ring: 178, ang: 272 },
     { id: 'reload', label: 'RELOAD', r: 42, kind: 'press', key: 'reload', ring: 300, ang: 164 },
+    { id: 'firemode', label: 'SEMI', r: 34, kind: 'press', key: 'fireMode', ring: 390, ang: 170 },
     { id: 'potion', label: 'DRAUGHT', r: 42, kind: 'press', key: 'usePotion', ring: 318, ang: 188 },
     { id: 'torch', label: 'TORCH', r: 42, kind: 'press', key: 'torch', ring: 318, ang: 262 },
     { id: 'offhand', label: 'SMOKE', r: 38, kind: 'press', key: 'offhandCycle', ring: 330, ang: 286 },
@@ -101789,7 +101884,7 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
       else { const a = b.ang * Math.PI / 180; b.x = ax + Math.cos(a) * b.ring * k; b.y = ay + Math.sin(a) * b.ring * k; }
     });
   }
-  const visible = b => (driving() ? !!b.drive || b.tl != null : !b.drive) && (b.id !== 'use' || showUse) && (b.id !== 'reload' || rifle());
+  const visible = b => (driving() ? !!b.drive || b.tl != null : !b.drive) && (b.id !== 'use' || showUse) && ((b.id !== 'reload' && b.id !== 'firemode') || rifle());
   function toUI(cx, cy) {
     const r = uiCanvas ? uiCanvas.getBoundingClientRect() : { left: 0, top: 0, width: W, height: H };
     return { x: (cx - r.left) / r.width * W, y: (cy - r.top) / r.height * H, s: r.width / W };
@@ -101864,10 +101959,10 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
 
   // ── Gamepad (standard mapping) ──
   const padPrev = [];
-  const pad = { mx: 0, my: 0, lx: 0, ly: 0, block: false, sprint: false, thr: 0, brk: 0, hand: false, boost: false };
+  const pad = { mx: 0, my: 0, lx: 0, ly: 0, block: false, sprint: false, thr: 0, brk: 0, hand: false, boost: false, fire: false };
   function dz(v) { const a = Math.abs(v); return a < DEAD ? 0 : Math.sign(v) * (a - DEAD) / (1 - DEAD); }
   function pollPad(dt, play) {
-    pad.mx = pad.my = pad.lx = pad.ly = 0; pad.block = pad.sprint = false; pad.thr = pad.brk = 0; pad.hand = pad.boost = false;
+    pad.mx = pad.my = pad.lx = pad.ly = 0; pad.block = pad.sprint = false; pad.thr = pad.brk = 0; pad.hand = pad.boost = pad.fire = false;
     let gp = null;
     try { const l = navigator.getGamepads ? navigator.getGamepads() : []; for (const g of l) if (g && g.connected) { gp = g; break; } } catch (e) {}
     if (!gp) { if (ch.pad.down) resetChan(ch.pad); return; }
@@ -101879,6 +101974,7 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
       const rx = dz(ax[2] || 0), ry = dz(ax[3] || 0);
       pad.lx = Math.sign(rx) * rx * rx * 3.0 * dt; pad.ly = Math.sign(ry) * ry * ry * 2.4 * dt * (invertY ? -1 : 1);
       pad.block = bt(6); pad.sprint = bt(10) || bt(4) || Math.hypot(pad.mx, pad.my) > 0.97;
+      pad.fire = bt(7); if (edge(13) && rifle()) pend.fireMode = true;
       if (rifle()) { if (edge(7)) pend.fire = true; if (ch.pad.down) resetChan(ch.pad); } else if (bt(7)) press(ch.pad); else release(ch.pad);
       if (edge(0)) pend.jump = true;
       if (edge(1)) pend.dodge = true;
@@ -101957,6 +102053,7 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
     PRESSED.forEach(k => { state[k] = pend[k]; pend[k] = false; });
     state.attack = state.attack || atk; state.heavyRelease = rel; state.heavy = heavy;
     state.block = rmb || pad.block || B.block.down > 0;
+    state.fireHeld = rifle() && (lmb || !!pad.fire || B.attack.down > 0);   // AUTO fires while held
     M.lostLock = pendLost; pendLost = false;
     // Iron Stallion (vehicle.js): the driving inputs; while driving, E/USE leaves the car instead of talking or looting
     state.throttle = pad.thr; state.brakeAxis = pad.brk;
@@ -102126,6 +102223,13 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
       ctx.beginPath(); ctx.moveTo(24, 30); ctx.lineTo(29, 22); ctx.lineTo(33, 31); ctx.stroke();
     },
     hbrake(ctx, t) { DRIVE_ICONS.hbrake(ctx, t); }, dexit(ctx, t) { DRIVE_ICONS.dexit(ctx, t); }, dboost(ctx, t) { DRIVE_ICONS.dboost(ctx, t); }, dcam(ctx, t) { DRIVE_ICONS.dcam(ctx, t); }, dhorn(ctx, t) { DRIVE_ICONS.dhorn(ctx, t); },
+    firemode(ctx) {
+      const auto = !!(CT.player && CT.player.fireMode === 'auto');
+      ctx.fillStyle = '#2a2c30'; ctx.fillRect(-22, -14, 44, 28); ctx.strokeStyle = INK; ctx.lineWidth = 2.5; ctx.strokeRect(-22, -14, 44, 28);
+      ctx.fillStyle = auto ? '#ff5a30' : BONE; ctx.font = 'bold 15px Georgia, serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(auto ? 'AUTO' : 'SEMI', 0, 1);
+      ctx.save(); ctx.rotate(auto ? 0.9 : -0.9); ctx.fillStyle = '#c9974f'; ctx.fillRect(-3, -30, 6, 16); ctx.restore();
+    },
     reload(ctx) {
       ctx.save(); ctx.rotate(0.25);
       ctx.fillStyle = '#2a2c30'; ctx.beginPath(); ctx.moveTo(-10, -22); ctx.lineTo(8, -22); ctx.quadraticCurveTo(12, 6, 16, 26); ctx.lineTo(-2, 30); ctx.quadraticCurveTo(-6, 4, -10, -22); ctx.closePath(); ctx.fill(); stroke(ctx, 2.5);
@@ -102213,7 +102317,7 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
     }
     ctx.restore();
     const small = b.tl != null;
-    const txt = charge > 0 ? (charge >= 1 ? 'UNLEASH' : 'HEAVY') : b.id === 'jump' && smoking() && !rifle() ? 'DRAG' : b.id === 'block' && rifle() ? 'AIM' : b.id === 'attack' && rifle() ? 'FIRE' : b.id === 'offhand' ? (smoking() ? 'SWAP' : 'SMOKE') : b.label;
+    const txt = charge > 0 ? (charge >= 1 ? 'UNLEASH' : 'HEAVY') : b.id === 'jump' && smoking() && !rifle() ? 'DRAG' : b.id === 'block' && rifle() ? 'AIM' : b.id === 'attack' && rifle() ? 'FIRE' : b.id === 'firemode' ? 'MODE' : b.id === 'offhand' ? (smoking() ? 'SWAP' : 'SMOKE') : b.label;
     label(ctx, txt, b.x, small ? b.y + r + 13 : b.y + r + (charge > 0 ? 30 : 16), small ? 13 : b.r > 60 ? 19 : 15, charge > 0 ? 'rgba(255,150,90,0.98)' : undefined);
     if (b.id === 'potion' && potions >= 0) {
       const cx = b.x + r * 0.72, cy = b.y - r * 0.72;
@@ -103031,7 +103135,7 @@ window.CT = window.CT || {};
     txt(g, String(st.level || 1), ox + 44, oy + 56, 32, '#fff0d0', { lw: 5 });
     // ── AR-15 ammo counter (player.js exposes CT.player.ammo while the rifle is out) ──
     const am = CT.player && CT.player.rifle && CT.player.ammo;
-    if (am) txt(g, am.mag + ' / ' + am.reserve, bx + BAR.w - 8, touch ? oy + 118 : oy - 14, 24, am.mag > 0 ? '#f4e0c0' : '#ff5040', { align: 'right', lw: 4 });
+    if (am) txt(g, am.mag + ' / ' + am.reserve + (CT.player.fireMode === 'auto' ? '  AUTO' : '  SEMI'), bx + BAR.w - 8, touch ? oy + 118 : oy - 14, 24, am.mag > 0 ? '#f4e0c0' : '#ff5040', { align: 'right', lw: 4 });
     g.restore();
   }
 

@@ -740,7 +740,7 @@ window.CT = window.CT || {};
     txt(g, String(st.level || 1), ox + 44, oy + 56, 32, '#fff0d0', { lw: 5 });
     // ── AR-15 ammo counter (player.js exposes CT.player.ammo while the rifle is out) ──
     const am = CT.player && CT.player.rifle && CT.player.ammo;
-    if (am) txt(g, am.mag + ' / ' + am.reserve, bx + BAR.w - 8, touch ? oy + 118 : oy - 14, 24, am.mag > 0 ? '#f4e0c0' : '#ff5040', { align: 'right', lw: 4 });
+    if (am) txt(g, am.mag + ' / ' + am.reserve + (CT.player.fireMode === 'auto' ? '  AUTO' : '  SEMI'), bx + BAR.w - 8, touch ? oy + 118 : oy - 14, 24, am.mag > 0 ? '#f4e0c0' : '#ff5040', { align: 'right', lw: 4 });
     g.restore();
   }
 
