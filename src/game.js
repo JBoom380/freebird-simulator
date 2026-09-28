@@ -1,6 +1,28 @@
 // ─── CORE: renderer, post pass, states, integration ──────────────────────────
 (function () {
   const C = CT.config, T = THREE, bus = CT.bus;
+  // One-time rescue link (?rescue=harrowby): rewrites the saved game so CONTINUE puts the player at Harrowby
+  // with the car parked beside them, Selene following, and the AR-15 in the pack. Everything else in the save is kept.
+  try {
+    const qp = new URLSearchParams(location.search);
+    if (qp.get('rescue') === 'harrowby') {
+      const HX = 132, HZ = 1015;
+      localStorage.setItem('crimsonThrone.pos', JSON.stringify({ x: HX, z: HZ, yaw: 0 }));
+      let car = {}; try { car = JSON.parse(localStorage.getItem('crimsonThrone.car') || '{}') || {}; } catch (e) {}
+      localStorage.setItem('crimsonThrone.car', JSON.stringify(Object.assign(car, { x: HX + 6, z: HZ + 3, h: Math.PI / 2, hp: 100, inBarn: false, found: true })));
+      const sv = JSON.parse(localStorage.getItem('crimsonThrone.save') || 'null');
+      if (sv) {
+        sv.companion = Object.assign(sv.companion || { stash: [], smokes: 6, beers: 3 }, { owned: true, following: true });
+        sv.inventory = sv.inventory || [];
+        const add = (id, n) => { const e = sv.inventory.find(e => e.id === id); if (e) e.count = Math.max(e.count, n); else sv.inventory.push({ id, count: n }); };
+        add('ar15', 1); if (!sv.inventory.some(e => e.id === 'ammo556' && e.count >= 60)) add('ammo556', 120);
+        sv.flags = Object.assign(sv.flags || {}, { skyVaultOpen: true, drove: true });
+        localStorage.setItem('crimsonThrone.save', JSON.stringify(sv));
+      }
+      localStorage.setItem('crimsonThrone.gate', '1');
+      history.replaceState(null, '', location.pathname);
+    }
+  } catch (e) { console.error('[rescue]', e); }
   const MODS = ['audio', 'world', 'sky', 'gore', 'monsters', 'life', 'npcs', 'rpg', 'player', 'controls', 'ui'];
   CT._broken = {};
   const has = (m, fn) => CT[m] && typeof CT[m][fn] === 'function' && !CT._broken[m];
