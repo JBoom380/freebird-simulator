@@ -1606,14 +1606,17 @@
   function useVault(o) {
     const r = CT.rpg, f = flags();
     if (f && f.skyVaultOpen) { emit('notify', { text: 'The vault is empty. Only dust and the smell of old iron.', kind: 'info' }); return; }
-    if (!r || typeof r.has !== 'function' || !r.has('skykey')) { emit('notify', { text: 'The iron door will not move. There is a keyhole, cold as the grave.', kind: 'info' }); sfx('ar_dry'); return; }
-    if (r.take) r.take('skykey', 1);
+    const lifted = !!(f && f.boneKingDead);   // the Bone King's curse sealed the vaults; with him dead the door gives way without the key
+    if (!r || typeof r.has !== 'function' || (!r.has('skykey') && !lifted)) { emit('notify', { text: 'The iron door will not move. There is a keyhole, cold as the grave.', kind: 'info' }); sfx('ar_dry'); return; }
+    if (r.has('skykey')) { if (r.take) r.take('skykey', 1); }
+    else emit('notify', { text: 'With the Bone King dead, the curse-seal on the door crumbles to rust.', kind: 'story' });
     if (f) { f.skyVaultOpen = true; if (typeof f.arMag !== 'number') f.arMag = AR_MAG; }
     if (r.grant) { r.grant('ar15', 1); r.grant('ammo556', 120); }
     emit('notify', { text: "The Sky-Iron Vault groans open. Inside, wrapped in oilcloth: the AR-15 'Thunderstick'.", kind: 'story' });
     sfx('ar_reload'); if (CORE) CORE.shake(0.4, 0.6);
     if (r.save) r.save();
   }
+  PL.vaultPos = () => ({ x: VAULT.x, z: VAULT.z });   // quests + map markers (settles on flat ground near (-220, -760) when built)
   function vaultUpdate(dt) {
     if (!VAULT.group && CORE && CORE.scene) buildVault(CORE);
     if (!VAULT.io && CT.interactables && typeof CT.interactables.add === 'function') VAULT.io = CT.interactables.add({ x: VAULT.x, z: VAULT.z, radius: 5.5, label: 'Open the Sky-Iron Vault', onUse: useVault });

@@ -1330,6 +1330,7 @@
           5: ['The citadel. My citadel. Break his throne and I will build a better one from the pieces.', 'If you die up there, I will be extremely annoyed.'],
           6: ['The Throne is broken. Vael breathes again. Listen: even the gulls sound less afraid.', 'Stay, and I name you my champion. Leave, and the songs will still get your name wrong.'],
         }[s] || ['Speak.'];
+        if (F().guardianDead && !F().skyVaultOpen) L.push('That key... the old sky-iron vaults in the Frozen Teeth. Something waits there.');
         return node(L, [ch('lore', 'Tell me of Vael and its curse.', 'lore'), ch('grim', 'Do you ever rest, queen?', 'rest'), bye()]);
       },
       rest: () => node([ms() >= 6 ? 'Tonight I will sleep for a week. Tomorrow I rebuild a kingdom.' : 'I will rest when he rots. Properly, this time.',
@@ -1372,12 +1373,14 @@
         [ch('claim', 'My thanks, sorceress.', 'root', () => { if (qs('wraiths') === 1) { adv('wraiths', 99); grant('bigpotion', 3); grant('gold', 120); take('wraithdust', cnt('wraithdust')); } })]),
       root: () => {
         const s = ms(), w = qs('wraiths'), q = RPG() && RPG().quest && RPG().quest('wraiths');
-        const L = s >= 6 ? ['The moon is white again. How dull. How lovely.', 'You broke the throne. Somewhere, a star is very embarrassed.']
+        const vaultHint = F().guardianDead && !F().skyVaultOpen;
+        const L0 = s >= 6 ? ['The moon is white again. How dull. How lovely.', 'You broke the throne. Somewhere, a star is very embarrassed.']
           : s === 5 ? ['When you stand before the Throne, do not look at it too long. It looks back.', 'And bring the blade home. I am fond of it. Less so of you. A little so of you.']
           : s === 4 ? ['The blade remembers the moon. Listen to it hum when he is near.', 'North, now. The Frozen Teeth. Mind the ice; it is thinner than it looks, like most kings.']
           : s === 3 ? ['Still no Moonblade? The guardian must be enjoying your company.', 'Moonfall Ruins. South-east. Strike the guardian, not the shield.']
           : w === 0 ? [`${(q && q.n) || 0} of five wraiths. I stopped counting at the screaming.`, 'Keep my blessing on you, or your sword will pass through them like a bad joke.']
           : ['Back again? The frogs will talk.', 'What do you want, drowned one?'];
+        const L = vaultHint ? [L0[0], 'That key... the old sky-iron vaults in the Frozen Teeth. Something waits there.'] : L0;
         const c = [];
         if (s === 2 || (s < 2 && !F().nyxBlade)) c.push(ch('blade', 'Tell me of the Moonblade.', 'blade', () => { F().nyxBlade = true; }));
         if (w < 0 && s >= 2) c.push(ch('wraiths', 'You spoke of wraiths.', 'wraithOffer'));
@@ -1449,7 +1452,8 @@
         if (s < 0) c.push(ch('job', 'I want better steel than this.', 'job'));
         if (s === 1 || (s === 0 && cnt('pelt') >= 5)) c.push(ch('pelts', 'Five wolf pelts, as promised.', 'done', () => { if (take('pelt', 5)) { adv('smith', 99); grant('steelsword', 1); } }));
         c.push(bye());
-        return node([s === 0 ? `How many pelts? ${cnt('pelt')}? I need five, not "some".` : ms() >= 6 ? 'The Bone King is dead and I still have to shoe horses. Heroes get songs. Smiths get calluses.' : 'Steel is hot, talk is cheap. What will it be?'], c);
+        const barn = !F().drove ? ['There\'s a blue iron beast in the old barn east of town. Snorts like a dragon. Nobody dares touch it.'] : [];
+        return node([s === 0 ? `How many pelts? ${cnt('pelt')}? I need five, not "some".` : ms() >= 6 ? 'The Bone King is dead and I still have to shoe horses. Heroes get songs. Smiths get calluses.' : 'Steel is hot, talk is cheap. What will it be?'].concat(barn), c);
       },
       job: () => node(['That rusted twig? I would not cut cheese with it.', 'Bring me five wolf pelts: grips for the swords, leather for the bellows. Do that, and I forge you a Harrowby longsword.'],
         [ch('accept', 'Five pelts. Done.', 'root', () => start('smith')), bye('Maybe later.')]),
@@ -1460,6 +1464,7 @@
 
   // ── Old Mag, the tavern keeper ─────────────────────────────────────────────
   const RUMOURS = [
+    ['There\'s a blue iron beast in the old barn east of town. Snorts like a dragon. Nobody dares touch it.'],
     ['They say Grask Blackhand keeps a troll on a chain. They say a lot of things. Half of them are true.'],
     ['The witch in the fen is older than this tavern. Older than the hill it sits on, if you ask me.'],
     ['Vesna Red-Arrow drinks here on feast days. She wins every contest and pays for nothing.'],

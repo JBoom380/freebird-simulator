@@ -461,7 +461,9 @@ window.CT = window.CT || {};
     S.settings = false; S.sel = 0; return { type: 'setting', key: 'panel', value: 'close' };
   }
   const DEAD_B = { label: 'RISE AGAIN', act: { type: 'respawn' }, x: 460, y: 496, w: 360, h: 72 };
-  const VIC_B = { label: 'RETURN TO TITLE', act: { type: 'quitTitle' }, x: 450, y: 616, w: 380, h: 68 };
+  const VIC_B = { label: 'RETURN TO TITLE', act: { type: 'quitTitle' }, x: 690, y: 624, w: 330, h: 64 };
+  const VIC_C = { label: 'CONTINUE YOUR JOURNEY', act: { type: 'continueJourney' }, x: 240, y: 616, w: 430, h: 76 };   // the primary post-game choice
+  const vicBtns = () => [VIC_C, VIC_B];
   const MAP_CLOSE = { label: 'CLOSE', act: { type: 'resume' }, x: 800, y: 604, w: 380, h: 64 };
   // Dialog
   const DLG = { px: 64, py: 92, pw: 384, ph: 480, tx: 488, ty: 92, tw: 736, th: 250 };
@@ -525,7 +527,7 @@ window.CT = window.CT || {};
       case 'TITLE': return titleBtns(v);
       case 'PAUSE': return pauseBtns();
       case 'DEAD': return [DEAD_B];
-      case 'VICTORY': return [VIC_B];
+      case 'VICTORY': return vicBtns();
       case 'MAP': return [MAP_CLOSE];
       default: return [];
     }
@@ -771,6 +773,12 @@ window.CT = window.CT || {};
     let facing = null;
     mk_.forEach(m => {
       if (m.angle == null) return;
+      if (m.kind === 'vault' || m.kind === 'barn') {
+        if (Math.abs(m.angle) > HALF) return;
+        const dv = clamp(m.angle, -HALF * 0.97, HALF * 0.97), xv = CP.x + dv * sc; g.globalAlpha = fa(dv); sideGlyph(g, m.kind, xv, cy, 1); g.globalAlpha = 1;
+        if (Math.abs(m.angle) < 0.07) facing = m;
+        return;
+      }
       if (m.kind === 'companion') {   // Selene: a small heart at her bearing, pinned to the strip edge (with a pointer) when she is behind
         const ad2 = Math.abs(m.angle), dc = clamp(m.angle, -HALF * 0.97, HALF * 0.97), xc = CP.x + dc * sc;
         g.globalAlpha = 1; g.save(); g.translate(xc, cy); g.beginPath(); g.moveTo(0, 8); g.bezierCurveTo(-13, -1, -7, -12, 0, -5); g.bezierCurveTo(7, -12, 13, -1, 0, 8); g.closePath();
@@ -999,6 +1007,7 @@ window.CT = window.CT || {};
     const T = pauseTitle(); g.drawImage(T.c, 640 - T.w / 2, 110);
     const B = pauseBtns(); hoverSel(B, v.isTouch); S.sel = clamp(S.sel, 0, B.length - 1);
     B.forEach((b, i) => drawBtn(g, b, i === S.sel, t));
+    if (CT.rpg && CT.rpg.flags && CT.rpg.flags.boneKingDead) txt(g, 'The Throne is Broken. Vael is yours to wander.', 640, 596, 15, '#d8b070', { italic: true, weight: 'normal', lw: 3 });
     const info = (v.notifications || []).filter(q => q.kind === 'info' && t - q.t < 2.5).pop();
     if (info) { g.globalAlpha = fade(t - info.t, 2.5, 0.2, 0.6); txt(g, info.text, 640, 580, 17, '#e8c078', { sp: 2, lw: 3 }); g.globalAlpha = 1; }
   }
@@ -1027,7 +1036,8 @@ window.CT = window.CT || {};
     embers(g, t, dt, 40, easeOut(a / 2));
     const T = vicText(), k = easeOut(a / 1.6);
     g.globalAlpha = k; g.drawImage(T.c, 640 - T.w / 2, 26 + (1 - k) * 20); g.globalAlpha = 1;
-    const e = easeOut((a - 1.2) / 1.5), L = wrap(g, EPILOGUE, 880, 23, { italic: true, weight: 'normal' });
+    const cmp = CT.rpg && CT.rpg.companion, sel = cmp && cmp.owned && cmp.following;
+    const e = easeOut((a - 1.2) / 1.5), L = wrap(g, EPILOGUE + (sel ? ' Selene lights a cigarette, hands you a cold one, and asks where to next.' : ''), 880, 23, { italic: true, weight: 'normal' });
     g.globalAlpha = e; L.forEach((l, i) => txt(g, l, 640, 262 + i * 34, 23, '#eadcc0', { italic: true, weight: 'normal', lw: 4 }));
     const hy = 262 + L.length * 34 + 30, h = easeOut((a - 2.6) / 1.2);
     g.globalAlpha = h;
@@ -1037,7 +1047,7 @@ window.CT = window.CT || {};
     });
     const c = easeOut((a - 3.6) / 1.2); g.globalAlpha = c;
     txt(g, 'A GAME BY JOHN SLAGBOOM', 640, hy + 78, 20, '#e8dcc0', { sp: 8, lw: 4 });
-    if (c > 0) drawBtn(g, VIC_B, S.sel === 0, t);
+    if (c > 0) { const B = vicBtns(); if (!v.isTouch) hoverSel(B, v.isTouch); S.sel = clamp(S.sel || 0, 0, 1); B.forEach((b, i) => drawBtn(g, b, i === S.sel, t)); }
     g.globalAlpha = 1;
   }
 
@@ -1291,6 +1301,19 @@ window.CT = window.CT || {};
     return c;
   }
   const w2m = (x, z) => [MS.mx + (x / EXT * 0.5 + 0.5) * MS.ms, MS.my + (z / EXT * 0.5 + 0.5) * MS.ms];
+  // small glyphs for the side goals: the Sky-Iron Vault (a gold key), the Iron Stallion (the blue car)
+  function sideGlyph(g, kind, x, y, s) {
+    g.save(); g.translate(x, y); g.scale(s, s); g.lineWidth = 2; g.strokeStyle = '#140802';
+    if (kind === 'vault') {
+      g.fillStyle = '#e8b040'; g.beginPath(); g.arc(-5, 0, 5.5, 0, Math.PI * 2); g.fill(); g.stroke();
+      g.fillRect(0, -2, 12, 4); g.strokeRect(0, -2, 12, 4); g.fillRect(8, 2, 2.5, 4); g.fillRect(4, 2, 2.5, 3);
+      g.fillStyle = '#140802'; g.beginPath(); g.arc(-5, 0, 2, 0, Math.PI * 2); g.fill();
+    } else {
+      g.fillStyle = '#7ab8e8'; g.beginPath(); g.moveTo(-11, 3); g.lineTo(-10, -2); g.lineTo(-5, -3); g.lineTo(-2, -7); g.lineTo(5, -7); g.lineTo(8, -3); g.lineTo(11, -2); g.lineTo(11, 3); g.closePath(); g.fill(); g.stroke();
+      g.fillStyle = '#140802'; g.fillRect(-9, -1, 18, 1.6); g.beginPath(); g.arc(-6, 4, 2.6, 0, Math.PI * 2); g.arc(6, 4, 2.6, 0, Math.PI * 2); g.fill();
+    }
+    g.restore();
+  }
   function drawMap(g, t, v) {
     mapStep(8);
     g.fillStyle = 'rgba(4,2,2,0.82)'; g.fillRect(0, 0, W, H);
@@ -1314,11 +1337,13 @@ window.CT = window.CT || {};
           txt(g, p.name, x, y + 22, 14, '#2a1206', { italic: true, stroke: 'rgba(240,226,190,0.8)', lw: 3, sy: 0 });
         } else { g.globalAlpha = 0.45; txt(g, '?', x, y, 20, '#4a2a10', { stroke: false }); g.globalAlpha = 1; }
       });
+      (m.marks || []).forEach(k => { const [x, y] = w2m(k.x, k.z); sideGlyph(g, k.kind, x, y, 1.4); txt(g, k.name, x, y + 20, 12, '#2a1206', { italic: true, stroke: 'rgba(240,226,190,0.8)', lw: 3, sy: 0 }); });
       if (m.quest) {
         const [x, y] = w2m(m.quest.x, m.quest.z), p = 0.5 + 0.5 * Math.sin(t * 2.5);
         g.beginPath(); g.arc(x, y, 14 + p * 6, 0, TAU); g.strokeStyle = `rgba(160,20,10,${0.6 - p * 0.4})`; g.lineWidth = 2; g.stroke();
         const ic = poiIcon('quest', 26); g.drawImage(ic, x - ic.width / 2, y - ic.height / 2);
       }
+      if (m.broken) txt(g, 'THE THRONE IS BROKEN', MS.mx + MS.ms / 2, MS.my + 14, 13, '#6a1008', { sp: 4, stroke: 'rgba(240,226,190,0.8)', lw: 3 });
       if (m.player) {
         const [x, y] = w2m(m.player.x, m.player.z), yaw = m.player.yaw || 0, ang = Math.atan2(-Math.cos(yaw), -Math.sin(yaw));
         g.save(); g.translate(x, y); g.rotate(ang);
@@ -1439,7 +1464,7 @@ window.CT = window.CT || {};
       case 'PAUSE': b = pick(pauseBtns()); break;
       case 'MAP': b = pick([MAP_CLOSE]); break;
       case 'DEAD': if (S.lastT - S.stateT >= 2) b = pick([DEAD_B]); break;
-      case 'VICTORY': if (S.lastT - S.stateT >= 3.6) b = pick([VIC_B]); break;
+      case 'VICTORY': if (S.lastT - S.stateT >= 3.6) b = pick(vicBtns()); break;
       case 'DIALOG': {
         const d = v.dialog; if (!d) return null;
         dlgState(d, S.lastT);
@@ -1496,7 +1521,12 @@ window.CT = window.CT || {};
       }
       case 'MAP': return (k === 'Escape' || k === 'm' || k === 'M' || ok) ? { type: 'resume' } : null;
       case 'DEAD': return ok && S.lastT - S.stateT >= 2 ? { type: 'respawn' } : null;
-      case 'VICTORY': return ok && S.lastT - S.stateT >= 3.6 ? { type: 'quitTitle' } : null;
+      case 'VICTORY': {
+        if (S.lastT - S.stateT < 3.6) return null;
+        const B = vicBtns(); if (lf || up) S.sel = 0; else if (rt || dn) S.sel = 1;
+        if (k === 'Escape') return { type: 'quitTitle' };
+        return ok ? Object.assign({}, B[clamp(S.sel || 0, 0, 1)].act) : null;
+      }
       case 'INVENTORY': {
         if (k === 'Escape' || k === 'Tab' || k === 'i' || k === 'I') return { type: 'resume' };
         if ((k === 'ArrowLeft' || k === 'ArrowRight' || k === 'c' || k === 'C') && compOwned()) { S.invTab = compTab() ? 'pack' : 'comp'; S.invScroll = 0; S.invSel = null; return null; }

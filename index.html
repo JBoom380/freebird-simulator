@@ -88150,7 +88150,7 @@ CT.horizon = {
   function autoWeather(dt, t) {
     // blood moon: rolled each dusk, lasts the night
     const nat = S.prevT >= 0 && Math.abs(t - S.prevT) < 0.02;
-    if (nat && S.prevT < 0.79 && t >= 0.79 && rnd() < 0.25) {
+    if (nat && S.prevT < 0.79 && t >= 0.79 && rnd() < (!!(CT.rpg && CT.rpg.flags && CT.rpg.flags.boneKingDead) ? 0.05 : 0.25)) {   // the curse lifted: blood moons grow rare
       setWeather('bloodmoon', 25);
       CT.bus.emit('notify', { text: 'The Blood Moon rises...', kind: 'omen' });
     }
@@ -88180,10 +88180,13 @@ CT.horizon = {
       }
     }
     bolt.material.uniforms.uI.value = S.boltI > 1 ? 1 : S.boltI * (0.6 + 0.4 * Math.sin(S.boltI * 40));
+    // the curse lifted (the Bone King dead): the storm crown collapses and fades over ~10 s, and its lightning stops
+    S.crownFade = Math.max(0, Math.min(1, (S.crownFade == null ? 1 : S.crownFade) + (!!(CT.rpg && CT.rpg.flags && CT.rpg.flags.boneKingDead) ? -dt / 10 : dt / 10)));
+    crown.scale.multiplyScalar(0.25 + 0.75 * S.crownFade); crown.visible = S.crownFade > 0.02;
     // the storm crown strikes the citadel mountain all the time
     S.crownI = Math.max(0, S.crownI - dt * 4);
     S.nextCrown -= dt;
-    if (S.nextCrown <= 0) {
+    if (S.nextCrown <= 0 && S.crownFade > 0.5) {
       S.nextCrown = 1.2 + rnd() * 4.5;
       const ra = rnd() * TAU, rr = rnd() * 120;
       strikeBolt(crownBolt, Math.cos(ra) * rr, -10, Math.sin(ra) * rr, Math.cos(ra) * rr * 1.6 + (rnd() - 0.5) * 80, -240, Math.sin(ra) * rr * 1.6 + (rnd() - 0.5) * 80, 4, 4);
@@ -92195,6 +92198,7 @@ CT.horizon = {
         // unique foes killed in a saved game stay dead (rpg flags survive reloads)
         const F = (CT.rpg && CT.rpg.flags) || {};
         g.left = g.left.filter(s => !((s.o.isChief && F.graskDead) || (s.o.isAlpha && F.alphaDead) || (s.o.isGuardian && F.guardianDead) || (s.o.boss && F.boneKingDead)));
+        if (g.poi === 'citadel' && F.boneKingDead) { let k = 0; g.left = g.left.filter(s => s.type !== 'boneKnight' || k++ < 2); }   // post-game: the throne room thins out
         const pack = packId++;
         g.left.forEach((s, k) => {
           let x, z, yaw;
@@ -92237,7 +92241,8 @@ CT.horizon = {
     if (rnd() < 0.5) return;                                                     // pace the arrivals (one check per 2 s)
     const night = isNight(), bio = has('world', 'biomeAt') ? CT.world.biomeAt(P.x, P.z) : 'meadow';
     const B = BIOME[bio] || BIOME.meadow;
-    const target = night ? B.n * (bloodmoon() ? 2 : 1) : B.d;
+    const lifted = !!(CT.rpg && CT.rpg.flags && CT.rpg.flags.boneKingDead);
+    const target = (night ? B.n * (bloodmoon() ? 2 : 1) : B.d) * (lifted && bio === 'citadel' ? 0.3 : 1);   // post-game: the citadel quiets
     if (roam >= target) return;
     const yaw = playerYaw();
     for (let tries = 0; tries < 6; tries++) {
@@ -97402,6 +97407,7 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
           5: ['The citadel. My citadel. Break his throne and I will build a better one from the pieces.', 'If you die up there, I will be extremely annoyed.'],
           6: ['The Throne is broken. Vael breathes again. Listen: even the gulls sound less afraid.', 'Stay, and I name you my champion. Leave, and the songs will still get your name wrong.'],
         }[s] || ['Speak.'];
+        if (F().guardianDead && !F().skyVaultOpen) L.push('That key... the old sky-iron vaults in the Frozen Teeth. Something waits there.');
         return node(L, [ch('lore', 'Tell me of Vael and its curse.', 'lore'), ch('grim', 'Do you ever rest, queen?', 'rest'), bye()]);
       },
       rest: () => node([ms() >= 6 ? 'Tonight I will sleep for a week. Tomorrow I rebuild a kingdom.' : 'I will rest when he rots. Properly, this time.',
@@ -97444,12 +97450,14 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
         [ch('claim', 'My thanks, sorceress.', 'root', () => { if (qs('wraiths') === 1) { adv('wraiths', 99); grant('bigpotion', 3); grant('gold', 120); take('wraithdust', cnt('wraithdust')); } })]),
       root: () => {
         const s = ms(), w = qs('wraiths'), q = RPG() && RPG().quest && RPG().quest('wraiths');
-        const L = s >= 6 ? ['The moon is white again. How dull. How lovely.', 'You broke the throne. Somewhere, a star is very embarrassed.']
+        const vaultHint = F().guardianDead && !F().skyVaultOpen;
+        const L0 = s >= 6 ? ['The moon is white again. How dull. How lovely.', 'You broke the throne. Somewhere, a star is very embarrassed.']
           : s === 5 ? ['When you stand before the Throne, do not look at it too long. It looks back.', 'And bring the blade home. I am fond of it. Less so of you. A little so of you.']
           : s === 4 ? ['The blade remembers the moon. Listen to it hum when he is near.', 'North, now. The Frozen Teeth. Mind the ice; it is thinner than it looks, like most kings.']
           : s === 3 ? ['Still no Moonblade? The guardian must be enjoying your company.', 'Moonfall Ruins. South-east. Strike the guardian, not the shield.']
           : w === 0 ? [`${(q && q.n) || 0} of five wraiths. I stopped counting at the screaming.`, 'Keep my blessing on you, or your sword will pass through them like a bad joke.']
           : ['Back again? The frogs will talk.', 'What do you want, drowned one?'];
+        const L = vaultHint ? [L0[0], 'That key... the old sky-iron vaults in the Frozen Teeth. Something waits there.'] : L0;
         const c = [];
         if (s === 2 || (s < 2 && !F().nyxBlade)) c.push(ch('blade', 'Tell me of the Moonblade.', 'blade', () => { F().nyxBlade = true; }));
         if (w < 0 && s >= 2) c.push(ch('wraiths', 'You spoke of wraiths.', 'wraithOffer'));
@@ -97521,7 +97529,8 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
         if (s < 0) c.push(ch('job', 'I want better steel than this.', 'job'));
         if (s === 1 || (s === 0 && cnt('pelt') >= 5)) c.push(ch('pelts', 'Five wolf pelts, as promised.', 'done', () => { if (take('pelt', 5)) { adv('smith', 99); grant('steelsword', 1); } }));
         c.push(bye());
-        return node([s === 0 ? `How many pelts? ${cnt('pelt')}? I need five, not "some".` : ms() >= 6 ? 'The Bone King is dead and I still have to shoe horses. Heroes get songs. Smiths get calluses.' : 'Steel is hot, talk is cheap. What will it be?'], c);
+        const barn = !F().drove ? ['There\'s a blue iron beast in the old barn east of town. Snorts like a dragon. Nobody dares touch it.'] : [];
+        return node([s === 0 ? `How many pelts? ${cnt('pelt')}? I need five, not "some".` : ms() >= 6 ? 'The Bone King is dead and I still have to shoe horses. Heroes get songs. Smiths get calluses.' : 'Steel is hot, talk is cheap. What will it be?'].concat(barn), c);
       },
       job: () => node(['That rusted twig? I would not cut cheese with it.', 'Bring me five wolf pelts: grips for the swords, leather for the bellows. Do that, and I forge you a Harrowby longsword.'],
         [ch('accept', 'Five pelts. Done.', 'root', () => start('smith')), bye('Maybe later.')]),
@@ -97532,6 +97541,7 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
 
   // ── Old Mag, the tavern keeper ─────────────────────────────────────────────
   const RUMOURS = [
+    ['There\'s a blue iron beast in the old barn east of town. Snorts like a dragon. Nobody dares touch it.'],
     ['They say Grask Blackhand keeps a troll on a chain. They say a lot of things. Half of them are true.'],
     ['The witch in the fen is older than this tavern. Older than the hill it sits on, if you ask me.'],
     ['Vesna Red-Arrow drinks here on feast days. She wins every contest and pays for nothing.'],
@@ -98043,6 +98053,13 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
       { text: 'Slay the wraiths of the Weeping Fen', poi: 'fen', count: 5 },
       { text: 'Return to Nyx of the Pale Moon', poi: 'fen', npc: 'nyx' },
     ] },
+    vault: { title: 'The Sky-Iron Vault', noTrack: true, stages: [
+      { text: 'Open the Sky-Iron Vault in the Frozen Teeth', poi: 'pass', at: () => (CT.player && CT.player.vaultPos ? CT.player.vaultPos() : { x: -220, z: -760 }) },
+    ] },
+    stallion: { title: 'The Iron Stallion', noTrack: true, stages: [
+      { text: 'Find the blue iron beast in the old barn east of Harrowby', poi: 'harrowby', at: () => (CT.vehicle && CT.vehicle.barnPos ? CT.vehicle.barnPos() : null) },
+      { text: 'Take the Iron Stallion for a drive', poi: 'harrowby', at: () => { const V = CT.vehicle, s = V && V._dbg && V._dbg.state ? V._dbg.state() : null; return s && s.x != null ? { x: s.x, z: s.z } : (V && V.barnPos ? V.barnPos() : null); } },
+    ] },
     smith: { title: 'Pelts for Steel', stages: [
       { text: 'Bring wolf pelts to Bram the smith', poi: 'harrowby', npc: 'bram', count: 5 },
       { text: 'Return to Bram the smith with 5 wolf pelts', poi: 'harrowby', npc: 'bram' },
@@ -98079,6 +98096,7 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
       const e = rpg.companion.stash.find(e => e.id === id); if (e) e.count += n; else rpg.companion.stash.push({ id, count: n });
       bus.emit('stash', { id, count: n, dir: 'give', by: 'selene' }); return true;
     }
+    if (id === 'skykey' && rpg.quests && !rpg.quest('vault') && !(rpg.flags && rpg.flags.skyVaultOpen)) setTimeout(() => rpg.startQuest('vault'), 0);   // the key starts the vault quest
     if (id === 'gold') rpg.stats.gold += n;
     else { const e = rpg.inventory.find(e => e.id === id); if (e) e.count += n; else rpg.inventory.push({ id, count: n }); }
     if (id === 'pelt') refreshSmith();
@@ -98188,9 +98206,10 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
     if (q.id === 'smith' && q.stage === 0) return `${st.text} (${Math.min(5, rpg.count('pelt'))}/5)`;
     return st.count ? `${st.text} (${q.n || 0}/${st.count})` : st.text;
   }
-  function refresh(q) { q.text = qText(q); q.target = targetFor(q); return q; }
+  function refresh(q) { q.text = qText(q); q.target = targetFor(q); if (q.id === 'throne') q.title = q.done ? 'The Throne is Broken' : QDEF.throne.title; return q; }
   function targetFor(q) {
     const st = QDEF[q.id].stages[q.stage]; if (!st || q.done) return null;
+    if (st.at) { let t = null; try { t = st.at(); } catch (e) { t = null; } if (t) return { x: t.x, z: t.z }; }
     const n = st.npc && CT.npcs && CT.npcs.list && CT.npcs.list.find(n => n.id === st.npc);
     if (n && n.pos) return { x: n.pos.x, z: n.pos.z };
     const p = poi(st.poi); return p ? { x: p.x, z: p.z } : null;
@@ -98204,7 +98223,7 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
     let q = rpg.quest(id); if (q) return q;
     q = { id, title: QDEF[id].title, stage: 0, n: 0, done: false, main: !!QDEF[id].main };
     rpg.quests.push(q); refresh(q);
-    if (!QDEF[id].main) rpg.tracked = id;
+    if (!QDEF[id].main && !QDEF[id].noTrack) rpg.tracked = id;   // the vault/car quests never steal the tracker from the main quest
     announce(q, 'Quest started');
     if (id === 'wolves' && rpg.has('alphapelt')) rpg.advanceQuest('wolves', 1);
     if (id === 'smith') refreshSmith();
@@ -98329,6 +98348,31 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
   };
   rpg.restockCompanion = function () { const c = rpg.companion; c.smokes = COMP_MAX.smokes; c.beers = COMP_MAX.beers; };
 
+  // ── Post-game + old saves: make the rifle and the car findable, keep the world going after the victory ──
+  // Runs after load and every few seconds in play. Idempotent.
+  rpg.migrate = function () {
+    const F = rpg.flags || (rpg.flags = {}); if (!rpg.stats) return;
+    // the victory stands: the main quest is complete ("The Throne is Broken")
+    if (F.boneKingDead && qStage('throne') >= 0) { const q = rpg.quest('throne'); if (q) { q.done = true; q.stage = QDEF.throne.stages.length; refresh(q); } }
+    // the guardian fell but the key never arrived (older saves): it turns up in the pack
+    if (F.guardianDead && !F.skyVaultOpen && !rpg.has('skykey') && !rpg.has('ar15') && !F.skyKeyGiven) {
+      F.skyKeyGiven = true; F.skyKeyDropped = true; rpg.give('skykey', 1);
+      bus.emit('notify', { text: 'You find a strange iron key in your pack... cold, heavy, and not forged by any smith of Vael.', kind: 'story' });
+    }
+    // the vault quest: from the key, or from the lifted curse (the seal breaks with the Bone King dead)
+    if (!F.skyVaultOpen && (rpg.has('skykey') || F.boneKingDead) && !rpg.quest('vault') && !rpg.has('ar15')) rpg.startQuest('vault');
+    if ((F.skyVaultOpen || rpg.has('ar15')) && qStage('vault') >= 0) rpg.completeQuest('vault');
+    // the car: from the first visit to Harrowby (or any save already past it); found -> drive it
+    const hb = ((CT.world && CT.world.pois) || []).find(o => o.id === 'harrowby');
+    const pastHarrowby = (hb && hb.found) || F.visitedHarrowby || F.kaelaMet || qStage('throne') !== 0;
+    if (!F.drove && pastHarrowby && !rpg.quest('stallion')) rpg.startQuest('stallion');
+    const found = !!(CT.vehicle && CT.vehicle.everFound && CT.vehicle.everFound());
+    if (found && qStage('stallion') === 0) rpg.advanceQuest('stallion', 1);
+    if (F.drove && qStage('stallion') >= 0) rpg.completeQuest('stallion');
+    // the tracker moves on to an open side goal when the main quest is done
+    const tq = rpg.quest(rpg.tracked); if (!tq || tq.done) { const nx = ['vault', 'stallion'].map(rpg.quest).find(q => q && !q.done) || rpg.quests.find(q => !q.done); if (nx) rpg.tracked = nx.id; }
+  };
+
   // ── Save / load / reset ────────────────────────────────────────────────────
   rpg.save = function () {
     try {
@@ -98357,6 +98401,8 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
     if (d.pois && CT.world && CT.world.pois) CT.world.pois.forEach(p => { if (d.pois.includes(p.id)) p.found = true; });
     victorySent = false; saveT = 0;
     const p = CT.player; if (p && 'hp' in p) { p.hp = rpg.stats.hpMax; if ('stamina' in p) p.stamina = rpg.stats.staminaMax; }
+    if (rpg.flags.boneKingDead) victorySent = true;   // a finished game never shows the victory screen again
+    rpg.migrate();
     return true;
   };
   rpg.reset = function () {
@@ -98378,10 +98424,14 @@ CT.portraitArt = {"kaela":"data:image/webp;base64,UklGRpQ3AABXRUJQVlA4IIg3AAAQyw
     if (!rpg.stats) rpg.reset();
     bus.on('kill', onKill);
     bus.on('poi', onPoi);
+    bus.on('poi', d => { if (d && d.id === 'harrowby') { rpg.flags.visitedHarrowby = true; rpg.migrate(); } });
     bus.on('victory', () => { victorySent = true; rpg.flags.victory = true; if (qStage('throne') >= 0) rpg.completeQuest('throne'); rpg.save(); });
   };
+  let migT = 0;
   rpg.update = function (dt, core) {
     if (!core || core.state !== 'PLAY') return;
+    if (CT.vehicle && CT.vehicle.driving && !rpg.flags.drove) { rpg.flags.drove = true; rpg.migrate(); }
+    migT += dt; if (migT > 3) { migT = 0; rpg.migrate(); }
     saveT += dt;
     if (saveT >= 60) { saveT = 0; rpg.save(); }
   };
@@ -99384,7 +99434,7 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
     if (IO) { IO.x = car.x; IO.z = car.z; IO.disabled = V.driving; }
     if (V.driving || hushed.size) hush(V.driving);
     // discovery
-    if (!car.found && BARN && Math.hypot(PL.pos.x - BARN.site.x, PL.pos.z - BARN.site.z) < 30) {
+    if (!car.found && BARN && Math.hypot(PL.pos.x - BARN.site.x, PL.pos.z - BARN.site.z) < 40) {
       car.found = true; save();
       emit('notify', { text: "DISCOVERED: The Stallion's Barn", kind: 'discover' }); sfx('discover');
       setTimeout(() => emit('notify', { text: 'Under the broken roof waits a beast of sky-iron, blue as a winter sky, striped like night.', kind: 'story' }), 1600);
@@ -99632,6 +99682,14 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
       catch (e) { console.error('[CT.vehicle.' + name + ']', e); if (CT._broken) CT._broken.vehicle = true; V.driving = false; return dflt; }
     };
   }
+  // The barn site is deterministic (roads + terrain), so quests can point at it before the barn is built.
+  let SITE0 = null;
+  V.barnPos = function () {
+    if (BARN) return { x: BARN.site.x, z: BARN.site.z };
+    if (!SITE0 && CT.world && CT.world.roads) { try { SITE0 = findBarnSite(); } catch (e) { SITE0 = null; } }
+    return SITE0 ? { x: SITE0.x, z: SITE0.z } : null;
+  };
+  V.everFound = function () { if (car.found) return true; try { const s = load(); return !!(s && s.found); } catch (e) { return false; } };
   Object.assign(V, {
     init: guard('init', init), tick: guard('tick', tick, false), absorb: guard('absorb', absorb, undefined), pushOut: guard('pushOut', pushOut), gauge: guard('gauge', gauge, null),
     _dbg: {
@@ -101260,14 +101318,17 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
   function useVault(o) {
     const r = CT.rpg, f = flags();
     if (f && f.skyVaultOpen) { emit('notify', { text: 'The vault is empty. Only dust and the smell of old iron.', kind: 'info' }); return; }
-    if (!r || typeof r.has !== 'function' || !r.has('skykey')) { emit('notify', { text: 'The iron door will not move. There is a keyhole, cold as the grave.', kind: 'info' }); sfx('ar_dry'); return; }
-    if (r.take) r.take('skykey', 1);
+    const lifted = !!(f && f.boneKingDead);   // the Bone King's curse sealed the vaults; with him dead the door gives way without the key
+    if (!r || typeof r.has !== 'function' || (!r.has('skykey') && !lifted)) { emit('notify', { text: 'The iron door will not move. There is a keyhole, cold as the grave.', kind: 'info' }); sfx('ar_dry'); return; }
+    if (r.has('skykey')) { if (r.take) r.take('skykey', 1); }
+    else emit('notify', { text: 'With the Bone King dead, the curse-seal on the door crumbles to rust.', kind: 'story' });
     if (f) { f.skyVaultOpen = true; if (typeof f.arMag !== 'number') f.arMag = AR_MAG; }
     if (r.grant) { r.grant('ar15', 1); r.grant('ammo556', 120); }
     emit('notify', { text: "The Sky-Iron Vault groans open. Inside, wrapped in oilcloth: the AR-15 'Thunderstick'.", kind: 'story' });
     sfx('ar_reload'); if (CORE) CORE.shake(0.4, 0.6);
     if (r.save) r.save();
   }
+  PL.vaultPos = () => ({ x: VAULT.x, z: VAULT.z });   // quests + map markers (settles on flat ground near (-220, -760) when built)
   function vaultUpdate(dt) {
     if (!VAULT.group && CORE && CORE.scene) buildVault(CORE);
     if (!VAULT.io && CT.interactables && typeof CT.interactables.add === 'function') VAULT.io = CT.interactables.add({ x: VAULT.x, z: VAULT.z, radius: 5.5, label: 'Open the Sky-Iron Vault', onUse: useVault });
@@ -102675,7 +102736,9 @@ window.CT = window.CT || {};
     S.settings = false; S.sel = 0; return { type: 'setting', key: 'panel', value: 'close' };
   }
   const DEAD_B = { label: 'RISE AGAIN', act: { type: 'respawn' }, x: 460, y: 496, w: 360, h: 72 };
-  const VIC_B = { label: 'RETURN TO TITLE', act: { type: 'quitTitle' }, x: 450, y: 616, w: 380, h: 68 };
+  const VIC_B = { label: 'RETURN TO TITLE', act: { type: 'quitTitle' }, x: 690, y: 624, w: 330, h: 64 };
+  const VIC_C = { label: 'CONTINUE YOUR JOURNEY', act: { type: 'continueJourney' }, x: 240, y: 616, w: 430, h: 76 };   // the primary post-game choice
+  const vicBtns = () => [VIC_C, VIC_B];
   const MAP_CLOSE = { label: 'CLOSE', act: { type: 'resume' }, x: 800, y: 604, w: 380, h: 64 };
   // Dialog
   const DLG = { px: 64, py: 92, pw: 384, ph: 480, tx: 488, ty: 92, tw: 736, th: 250 };
@@ -102739,7 +102802,7 @@ window.CT = window.CT || {};
       case 'TITLE': return titleBtns(v);
       case 'PAUSE': return pauseBtns();
       case 'DEAD': return [DEAD_B];
-      case 'VICTORY': return [VIC_B];
+      case 'VICTORY': return vicBtns();
       case 'MAP': return [MAP_CLOSE];
       default: return [];
     }
@@ -102985,6 +103048,12 @@ window.CT = window.CT || {};
     let facing = null;
     mk_.forEach(m => {
       if (m.angle == null) return;
+      if (m.kind === 'vault' || m.kind === 'barn') {
+        if (Math.abs(m.angle) > HALF) return;
+        const dv = clamp(m.angle, -HALF * 0.97, HALF * 0.97), xv = CP.x + dv * sc; g.globalAlpha = fa(dv); sideGlyph(g, m.kind, xv, cy, 1); g.globalAlpha = 1;
+        if (Math.abs(m.angle) < 0.07) facing = m;
+        return;
+      }
       if (m.kind === 'companion') {   // Selene: a small heart at her bearing, pinned to the strip edge (with a pointer) when she is behind
         const ad2 = Math.abs(m.angle), dc = clamp(m.angle, -HALF * 0.97, HALF * 0.97), xc = CP.x + dc * sc;
         g.globalAlpha = 1; g.save(); g.translate(xc, cy); g.beginPath(); g.moveTo(0, 8); g.bezierCurveTo(-13, -1, -7, -12, 0, -5); g.bezierCurveTo(7, -12, 13, -1, 0, 8); g.closePath();
@@ -103213,6 +103282,7 @@ window.CT = window.CT || {};
     const T = pauseTitle(); g.drawImage(T.c, 640 - T.w / 2, 110);
     const B = pauseBtns(); hoverSel(B, v.isTouch); S.sel = clamp(S.sel, 0, B.length - 1);
     B.forEach((b, i) => drawBtn(g, b, i === S.sel, t));
+    if (CT.rpg && CT.rpg.flags && CT.rpg.flags.boneKingDead) txt(g, 'The Throne is Broken. Vael is yours to wander.', 640, 596, 15, '#d8b070', { italic: true, weight: 'normal', lw: 3 });
     const info = (v.notifications || []).filter(q => q.kind === 'info' && t - q.t < 2.5).pop();
     if (info) { g.globalAlpha = fade(t - info.t, 2.5, 0.2, 0.6); txt(g, info.text, 640, 580, 17, '#e8c078', { sp: 2, lw: 3 }); g.globalAlpha = 1; }
   }
@@ -103241,7 +103311,8 @@ window.CT = window.CT || {};
     embers(g, t, dt, 40, easeOut(a / 2));
     const T = vicText(), k = easeOut(a / 1.6);
     g.globalAlpha = k; g.drawImage(T.c, 640 - T.w / 2, 26 + (1 - k) * 20); g.globalAlpha = 1;
-    const e = easeOut((a - 1.2) / 1.5), L = wrap(g, EPILOGUE, 880, 23, { italic: true, weight: 'normal' });
+    const cmp = CT.rpg && CT.rpg.companion, sel = cmp && cmp.owned && cmp.following;
+    const e = easeOut((a - 1.2) / 1.5), L = wrap(g, EPILOGUE + (sel ? ' Selene lights a cigarette, hands you a cold one, and asks where to next.' : ''), 880, 23, { italic: true, weight: 'normal' });
     g.globalAlpha = e; L.forEach((l, i) => txt(g, l, 640, 262 + i * 34, 23, '#eadcc0', { italic: true, weight: 'normal', lw: 4 }));
     const hy = 262 + L.length * 34 + 30, h = easeOut((a - 2.6) / 1.2);
     g.globalAlpha = h;
@@ -103251,7 +103322,7 @@ window.CT = window.CT || {};
     });
     const c = easeOut((a - 3.6) / 1.2); g.globalAlpha = c;
     txt(g, 'A GAME BY JOHN SLAGBOOM', 640, hy + 78, 20, '#e8dcc0', { sp: 8, lw: 4 });
-    if (c > 0) drawBtn(g, VIC_B, S.sel === 0, t);
+    if (c > 0) { const B = vicBtns(); if (!v.isTouch) hoverSel(B, v.isTouch); S.sel = clamp(S.sel || 0, 0, 1); B.forEach((b, i) => drawBtn(g, b, i === S.sel, t)); }
     g.globalAlpha = 1;
   }
 
@@ -103505,6 +103576,19 @@ window.CT = window.CT || {};
     return c;
   }
   const w2m = (x, z) => [MS.mx + (x / EXT * 0.5 + 0.5) * MS.ms, MS.my + (z / EXT * 0.5 + 0.5) * MS.ms];
+  // small glyphs for the side goals: the Sky-Iron Vault (a gold key), the Iron Stallion (the blue car)
+  function sideGlyph(g, kind, x, y, s) {
+    g.save(); g.translate(x, y); g.scale(s, s); g.lineWidth = 2; g.strokeStyle = '#140802';
+    if (kind === 'vault') {
+      g.fillStyle = '#e8b040'; g.beginPath(); g.arc(-5, 0, 5.5, 0, Math.PI * 2); g.fill(); g.stroke();
+      g.fillRect(0, -2, 12, 4); g.strokeRect(0, -2, 12, 4); g.fillRect(8, 2, 2.5, 4); g.fillRect(4, 2, 2.5, 3);
+      g.fillStyle = '#140802'; g.beginPath(); g.arc(-5, 0, 2, 0, Math.PI * 2); g.fill();
+    } else {
+      g.fillStyle = '#7ab8e8'; g.beginPath(); g.moveTo(-11, 3); g.lineTo(-10, -2); g.lineTo(-5, -3); g.lineTo(-2, -7); g.lineTo(5, -7); g.lineTo(8, -3); g.lineTo(11, -2); g.lineTo(11, 3); g.closePath(); g.fill(); g.stroke();
+      g.fillStyle = '#140802'; g.fillRect(-9, -1, 18, 1.6); g.beginPath(); g.arc(-6, 4, 2.6, 0, Math.PI * 2); g.arc(6, 4, 2.6, 0, Math.PI * 2); g.fill();
+    }
+    g.restore();
+  }
   function drawMap(g, t, v) {
     mapStep(8);
     g.fillStyle = 'rgba(4,2,2,0.82)'; g.fillRect(0, 0, W, H);
@@ -103528,11 +103612,13 @@ window.CT = window.CT || {};
           txt(g, p.name, x, y + 22, 14, '#2a1206', { italic: true, stroke: 'rgba(240,226,190,0.8)', lw: 3, sy: 0 });
         } else { g.globalAlpha = 0.45; txt(g, '?', x, y, 20, '#4a2a10', { stroke: false }); g.globalAlpha = 1; }
       });
+      (m.marks || []).forEach(k => { const [x, y] = w2m(k.x, k.z); sideGlyph(g, k.kind, x, y, 1.4); txt(g, k.name, x, y + 20, 12, '#2a1206', { italic: true, stroke: 'rgba(240,226,190,0.8)', lw: 3, sy: 0 }); });
       if (m.quest) {
         const [x, y] = w2m(m.quest.x, m.quest.z), p = 0.5 + 0.5 * Math.sin(t * 2.5);
         g.beginPath(); g.arc(x, y, 14 + p * 6, 0, TAU); g.strokeStyle = `rgba(160,20,10,${0.6 - p * 0.4})`; g.lineWidth = 2; g.stroke();
         const ic = poiIcon('quest', 26); g.drawImage(ic, x - ic.width / 2, y - ic.height / 2);
       }
+      if (m.broken) txt(g, 'THE THRONE IS BROKEN', MS.mx + MS.ms / 2, MS.my + 14, 13, '#6a1008', { sp: 4, stroke: 'rgba(240,226,190,0.8)', lw: 3 });
       if (m.player) {
         const [x, y] = w2m(m.player.x, m.player.z), yaw = m.player.yaw || 0, ang = Math.atan2(-Math.cos(yaw), -Math.sin(yaw));
         g.save(); g.translate(x, y); g.rotate(ang);
@@ -103653,7 +103739,7 @@ window.CT = window.CT || {};
       case 'PAUSE': b = pick(pauseBtns()); break;
       case 'MAP': b = pick([MAP_CLOSE]); break;
       case 'DEAD': if (S.lastT - S.stateT >= 2) b = pick([DEAD_B]); break;
-      case 'VICTORY': if (S.lastT - S.stateT >= 3.6) b = pick([VIC_B]); break;
+      case 'VICTORY': if (S.lastT - S.stateT >= 3.6) b = pick(vicBtns()); break;
       case 'DIALOG': {
         const d = v.dialog; if (!d) return null;
         dlgState(d, S.lastT);
@@ -103710,7 +103796,12 @@ window.CT = window.CT || {};
       }
       case 'MAP': return (k === 'Escape' || k === 'm' || k === 'M' || ok) ? { type: 'resume' } : null;
       case 'DEAD': return ok && S.lastT - S.stateT >= 2 ? { type: 'respawn' } : null;
-      case 'VICTORY': return ok && S.lastT - S.stateT >= 3.6 ? { type: 'quitTitle' } : null;
+      case 'VICTORY': {
+        if (S.lastT - S.stateT < 3.6) return null;
+        const B = vicBtns(); if (lf || up) S.sel = 0; else if (rt || dn) S.sel = 1;
+        if (k === 'Escape') return { type: 'quitTitle' };
+        return ok ? Object.assign({}, B[clamp(S.sel || 0, 0, 1)].act) : null;
+      }
       case 'INVENTORY': {
         if (k === 'Escape' || k === 'Tab' || k === 'i' || k === 'I') return { type: 'resume' };
         if ((k === 'ArrowLeft' || k === 'ArrowRight' || k === 'c' || k === 'C') && compOwned()) { S.invTab = compTab() ? 'pack' : 'comp'; S.invScroll = 0; S.invSel = null; return null; }
@@ -103948,6 +104039,13 @@ window.CT = window.CT || {};
       case 'respawn': call('player', 'respawn'); S.fade = 0; enterPlay(); break;
       case 'save': call('rpg', 'save'); savePos(); notify('Game saved', 'info'); break;
       case 'quitTitle': call('rpg', 'save'); savePos(); setState('TITLE'); music('title'); break;
+      case 'continueJourney': {   // post-game (Skyrim-style): the world stays alive, the Bone King stays dead
+        call('rpg', 'migrate'); call('rpg', 'save'); savePos();
+        const p = CT.player; if (p && p.alive === false) call('player', 'respawn');
+        enterPlay(); music('explore');
+        notify('The Throne is Broken. Vael is yours to wander.', 'story');
+        break;
+      }
       case 'setting': if (a.key === 'volume') call('audio', 'setVolume', a.value, a.value, a.value); break;
       default: return false;
     }
@@ -103970,6 +104068,10 @@ window.CT = window.CT || {};
     });
     const q = has('rpg', 'activeQuest') ? CT.rpg.activeQuest() : null;
     if (q && q.target) { const dx = q.target.x - px, dz = q.target.z - pz; markers.push({ name: q.title, angle: angleTo(yaw, dx, dz), dist: Math.hypot(dx, dz), kind: 'quest' }); }
+    const sideMarks = [];   // the Sky-Iron Vault and the Iron Stallion: compass + map markers while those quests are open
+    if (r.quests) for (const sq of r.quests) { if (sq.done || !sq.target || (sq.id !== 'vault' && sq.id !== 'stallion') || (q && q.id === sq.id)) continue;
+      const dx = sq.target.x - px, dz = sq.target.z - pz, kind = sq.id === 'vault' ? 'vault' : 'barn';
+      markers.push({ name: sq.title, angle: angleTo(yaw, dx, dz), dist: Math.hypot(dx, dz), kind }); sideMarks.push({ x: sq.target.x, z: sq.target.z, kind, name: sq.title }); }
     // the companion (Selene) while she follows: usually behind the player, so the compass shows where she is
     const cmpS = CT.npcs && CT.npcs.companion, cst = cmpS && cmpS.state, cnpc = cst && cst.owned && cst.following && cmpS.npc;
     if (cnpc && cnpc.pos && !(CT.vehicle && CT.vehicle.driving)) { const dx = cnpc.pos.x - px, dz = cnpc.pos.z - pz; markers.push({ name: 'Selene', angle: angleTo(yaw, dx, dz), dist: Math.hypot(dx, dz), kind: 'companion' }); }
@@ -103985,7 +104087,7 @@ window.CT = window.CT || {};
       player: { hp: p.hp || 0, hpMax: (r.stats && r.stats.hpMax) || C.PLAYER.hp, stamina: p.stamina || 0, staminaMax: (r.stats && r.stats.staminaMax) || C.PLAYER.stamina },
       rpg: { stats: r.stats, inventory: r.inventory, equipped: r.equipped, quests: r.quests, active: q },
       compass: { yaw, markers }, prompt, dialog, notifications: S.notes.filter(n => core.time - n.t < 6),
-      map: { pois, player: { x: px, z: pz, yaw }, quest: q && q.target },
+      map: { pois, player: { x: px, z: pz, yaw }, quest: q && q.target, marks: sideMarks, broken: !!(r.flags && r.flags.boneKingDead) },
       boss: has('monsters', 'bossInfo') ? CT.monsters.bossInfo() : null,
       victory: core.state === 'VICTORY',
     };

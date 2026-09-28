@@ -194,6 +194,13 @@
       case 'respawn': call('player', 'respawn'); S.fade = 0; enterPlay(); break;
       case 'save': call('rpg', 'save'); savePos(); notify('Game saved', 'info'); break;
       case 'quitTitle': call('rpg', 'save'); savePos(); setState('TITLE'); music('title'); break;
+      case 'continueJourney': {   // post-game (Skyrim-style): the world stays alive, the Bone King stays dead
+        call('rpg', 'migrate'); call('rpg', 'save'); savePos();
+        const p = CT.player; if (p && p.alive === false) call('player', 'respawn');
+        enterPlay(); music('explore');
+        notify('The Throne is Broken. Vael is yours to wander.', 'story');
+        break;
+      }
       case 'setting': if (a.key === 'volume') call('audio', 'setVolume', a.value, a.value, a.value); break;
       default: return false;
     }
@@ -216,6 +223,10 @@
     });
     const q = has('rpg', 'activeQuest') ? CT.rpg.activeQuest() : null;
     if (q && q.target) { const dx = q.target.x - px, dz = q.target.z - pz; markers.push({ name: q.title, angle: angleTo(yaw, dx, dz), dist: Math.hypot(dx, dz), kind: 'quest' }); }
+    const sideMarks = [];   // the Sky-Iron Vault and the Iron Stallion: compass + map markers while those quests are open
+    if (r.quests) for (const sq of r.quests) { if (sq.done || !sq.target || (sq.id !== 'vault' && sq.id !== 'stallion') || (q && q.id === sq.id)) continue;
+      const dx = sq.target.x - px, dz = sq.target.z - pz, kind = sq.id === 'vault' ? 'vault' : 'barn';
+      markers.push({ name: sq.title, angle: angleTo(yaw, dx, dz), dist: Math.hypot(dx, dz), kind }); sideMarks.push({ x: sq.target.x, z: sq.target.z, kind, name: sq.title }); }
     // the companion (Selene) while she follows: usually behind the player, so the compass shows where she is
     const cmpS = CT.npcs && CT.npcs.companion, cst = cmpS && cmpS.state, cnpc = cst && cst.owned && cst.following && cmpS.npc;
     if (cnpc && cnpc.pos && !(CT.vehicle && CT.vehicle.driving)) { const dx = cnpc.pos.x - px, dz = cnpc.pos.z - pz; markers.push({ name: 'Selene', angle: angleTo(yaw, dx, dz), dist: Math.hypot(dx, dz), kind: 'companion' }); }
@@ -231,7 +242,7 @@
       player: { hp: p.hp || 0, hpMax: (r.stats && r.stats.hpMax) || C.PLAYER.hp, stamina: p.stamina || 0, staminaMax: (r.stats && r.stats.staminaMax) || C.PLAYER.stamina },
       rpg: { stats: r.stats, inventory: r.inventory, equipped: r.equipped, quests: r.quests, active: q },
       compass: { yaw, markers }, prompt, dialog, notifications: S.notes.filter(n => core.time - n.t < 6),
-      map: { pois, player: { x: px, z: pz, yaw }, quest: q && q.target },
+      map: { pois, player: { x: px, z: pz, yaw }, quest: q && q.target, marks: sideMarks, broken: !!(r.flags && r.flags.boneKingDead) },
       boss: has('monsters', 'bossInfo') ? CT.monsters.bossInfo() : null,
       victory: core.state === 'VICTORY',
     };

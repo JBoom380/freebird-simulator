@@ -1613,6 +1613,7 @@
         // unique foes killed in a saved game stay dead (rpg flags survive reloads)
         const F = (CT.rpg && CT.rpg.flags) || {};
         g.left = g.left.filter(s => !((s.o.isChief && F.graskDead) || (s.o.isAlpha && F.alphaDead) || (s.o.isGuardian && F.guardianDead) || (s.o.boss && F.boneKingDead)));
+        if (g.poi === 'citadel' && F.boneKingDead) { let k = 0; g.left = g.left.filter(s => s.type !== 'boneKnight' || k++ < 2); }   // post-game: the throne room thins out
         const pack = packId++;
         g.left.forEach((s, k) => {
           let x, z, yaw;
@@ -1655,7 +1656,8 @@
     if (rnd() < 0.5) return;                                                     // pace the arrivals (one check per 2 s)
     const night = isNight(), bio = has('world', 'biomeAt') ? CT.world.biomeAt(P.x, P.z) : 'meadow';
     const B = BIOME[bio] || BIOME.meadow;
-    const target = night ? B.n * (bloodmoon() ? 2 : 1) : B.d;
+    const lifted = !!(CT.rpg && CT.rpg.flags && CT.rpg.flags.boneKingDead);
+    const target = (night ? B.n * (bloodmoon() ? 2 : 1) : B.d) * (lifted && bio === 'citadel' ? 0.3 : 1);   // post-game: the citadel quiets
     if (roam >= target) return;
     const yaw = playerYaw();
     for (let tries = 0; tries < 6; tries++) {

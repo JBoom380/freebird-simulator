@@ -992,7 +992,7 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
     if (IO) { IO.x = car.x; IO.z = car.z; IO.disabled = V.driving; }
     if (V.driving || hushed.size) hush(V.driving);
     // discovery
-    if (!car.found && BARN && Math.hypot(PL.pos.x - BARN.site.x, PL.pos.z - BARN.site.z) < 30) {
+    if (!car.found && BARN && Math.hypot(PL.pos.x - BARN.site.x, PL.pos.z - BARN.site.z) < 40) {
       car.found = true; save();
       emit('notify', { text: "DISCOVERED: The Stallion's Barn", kind: 'discover' }); sfx('discover');
       setTimeout(() => emit('notify', { text: 'Under the broken roof waits a beast of sky-iron, blue as a winter sky, striped like night.', kind: 'story' }), 1600);
@@ -1240,6 +1240,14 @@ float ctSeg(vec2 p, vec2 a, vec2 b, float r){ vec2 pa = p - a, ba = b - a; float
       catch (e) { console.error('[CT.vehicle.' + name + ']', e); if (CT._broken) CT._broken.vehicle = true; V.driving = false; return dflt; }
     };
   }
+  // The barn site is deterministic (roads + terrain), so quests can point at it before the barn is built.
+  let SITE0 = null;
+  V.barnPos = function () {
+    if (BARN) return { x: BARN.site.x, z: BARN.site.z };
+    if (!SITE0 && CT.world && CT.world.roads) { try { SITE0 = findBarnSite(); } catch (e) { SITE0 = null; } }
+    return SITE0 ? { x: SITE0.x, z: SITE0.z } : null;
+  };
+  V.everFound = function () { if (car.found) return true; try { const s = load(); return !!(s && s.found); } catch (e) { return false; } };
   Object.assign(V, {
     init: guard('init', init), tick: guard('tick', tick, false), absorb: guard('absorb', absorb, undefined), pushOut: guard('pushOut', pushOut), gauge: guard('gauge', gauge, null),
     _dbg: {

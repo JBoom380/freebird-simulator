@@ -23,6 +23,13 @@
       { text: 'Slay the wraiths of the Weeping Fen', poi: 'fen', count: 5 },
       { text: 'Return to Nyx of the Pale Moon', poi: 'fen', npc: 'nyx' },
     ] },
+    vault: { title: 'The Sky-Iron Vault', noTrack: true, stages: [
+      { text: 'Open the Sky-Iron Vault in the Frozen Teeth', poi: 'pass', at: () => (CT.player && CT.player.vaultPos ? CT.player.vaultPos() : { x: -220, z: -760 }) },
+    ] },
+    stallion: { title: 'The Iron Stallion', noTrack: true, stages: [
+      { text: 'Find the blue iron beast in the old barn east of Harrowby', poi: 'harrowby', at: () => (CT.vehicle && CT.vehicle.barnPos ? CT.vehicle.barnPos() : null) },
+      { text: 'Take the Iron Stallion for a drive', poi: 'harrowby', at: () => { const V = CT.vehicle, s = V && V._dbg && V._dbg.state ? V._dbg.state() : null; return s && s.x != null ? { x: s.x, z: s.z } : (V && V.barnPos ? V.barnPos() : null); } },
+    ] },
     smith: { title: 'Pelts for Steel', stages: [
       { text: 'Bring wolf pelts to Bram the smith', poi: 'harrowby', npc: 'bram', count: 5 },
       { text: 'Return to Bram the smith with 5 wolf pelts', poi: 'harrowby', npc: 'bram' },
@@ -59,6 +66,7 @@
       const e = rpg.companion.stash.find(e => e.id === id); if (e) e.count += n; else rpg.companion.stash.push({ id, count: n });
       bus.emit('stash', { id, count: n, dir: 'give', by: 'selene' }); return true;
     }
+    if (id === 'skykey' && rpg.quests && !rpg.quest('vault') && !(rpg.flags && rpg.flags.skyVaultOpen)) setTimeout(() => rpg.startQuest('vault'), 0);   // the key starts the vault quest
     if (id === 'gold') rpg.stats.gold += n;
     else { const e = rpg.inventory.find(e => e.id === id); if (e) e.count += n; else rpg.inventory.push({ id, count: n }); }
     if (id === 'pelt') refreshSmith();
@@ -168,9 +176,10 @@
     if (q.id === 'smith' && q.stage === 0) return `${st.text} (${Math.min(5, rpg.count('pelt'))}/5)`;
     return st.count ? `${st.text} (${q.n || 0}/${st.count})` : st.text;
   }
-  function refresh(q) { q.text = qText(q); q.target = targetFor(q); return q; }
+  function refresh(q) { q.text = qText(q); q.target = targetFor(q); if (q.id === 'throne') q.title = q.done ? 'The Throne is Broken' : QDEF.throne.title; return q; }
   function targetFor(q) {
     const st = QDEF[q.id].stages[q.stage]; if (!st || q.done) return null;
+    if (st.at) { let t = null; try { t = st.at(); } catch (e) { t = null; } if (t) return { x: t.x, z: t.z }; }
     const n = st.npc && CT.npcs && CT.npcs.list && CT.npcs.list.find(n => n.id === st.npc);
     if (n && n.pos) return { x: n.pos.x, z: n.pos.z };
     const p = poi(st.poi); return p ? { x: p.x, z: p.z } : null;
@@ -184,7 +193,7 @@
     let q = rpg.quest(id); if (q) return q;
     q = { id, title: QDEF[id].title, stage: 0, n: 0, done: false, main: !!QDEF[id].main };
     rpg.quests.push(q); refresh(q);
-    if (!QDEF[id].main) rpg.tracked = id;
+    if (!QDEF[id].main && !QDEF[id].noTrack) rpg.tracked = id;   // the vault/car quests never steal the tracker from the main quest
     announce(q, 'Quest started');
     if (id === 'wolves' && rpg.has('alphapelt')) rpg.advanceQuest('wolves', 1);
     if (id === 'smith') refreshSmith();
@@ -309,6 +318,31 @@
   };
   rpg.restockCompanion = function () { const c = rpg.companion; c.smokes = COMP_MAX.smokes; c.beers = COMP_MAX.beers; };
 
+  // ── Post-game + old saves: make the rifle and the car findable, keep the world going after the victory ──
+  // Runs after load and every few seconds in play. Idempotent.
+  rpg.migrate = function () {
+    const F = rpg.flags || (rpg.flags = {}); if (!rpg.stats) return;
+    // the victory stands: the main quest is complete ("The Throne is Broken")
+    if (F.boneKingDead && qStage('throne') >= 0) { const q = rpg.quest('throne'); if (q) { q.done = true; q.stage = QDEF.throne.stages.length; refresh(q); } }
+    // the guardian fell but the key never arrived (older saves): it turns up in the pack
+    if (F.guardianDead && !F.skyVaultOpen && !rpg.has('skykey') && !rpg.has('ar15') && !F.skyKeyGiven) {
+      F.skyKeyGiven = true; F.skyKeyDropped = true; rpg.give('skykey', 1);
+      bus.emit('notify', { text: 'You find a strange iron key in your pack... cold, heavy, and not forged by any smith of Vael.', kind: 'story' });
+    }
+    // the vault quest: from the key, or from the lifted curse (the seal breaks with the Bone King dead)
+    if (!F.skyVaultOpen && (rpg.has('skykey') || F.boneKingDead) && !rpg.quest('vault') && !rpg.has('ar15')) rpg.startQuest('vault');
+    if ((F.skyVaultOpen || rpg.has('ar15')) && qStage('vault') >= 0) rpg.completeQuest('vault');
+    // the car: from the first visit to Harrowby (or any save already past it); found -> drive it
+    const hb = ((CT.world && CT.world.pois) || []).find(o => o.id === 'harrowby');
+    const pastHarrowby = (hb && hb.found) || F.visitedHarrowby || F.kaelaMet || qStage('throne') !== 0;
+    if (!F.drove && pastHarrowby && !rpg.quest('stallion')) rpg.startQuest('stallion');
+    const found = !!(CT.vehicle && CT.vehicle.everFound && CT.vehicle.everFound());
+    if (found && qStage('stallion') === 0) rpg.advanceQuest('stallion', 1);
+    if (F.drove && qStage('stallion') >= 0) rpg.completeQuest('stallion');
+    // the tracker moves on to an open side goal when the main quest is done
+    const tq = rpg.quest(rpg.tracked); if (!tq || tq.done) { const nx = ['vault', 'stallion'].map(rpg.quest).find(q => q && !q.done) || rpg.quests.find(q => !q.done); if (nx) rpg.tracked = nx.id; }
+  };
+
   // ── Save / load / reset ────────────────────────────────────────────────────
   rpg.save = function () {
     try {
@@ -337,6 +371,8 @@
     if (d.pois && CT.world && CT.world.pois) CT.world.pois.forEach(p => { if (d.pois.includes(p.id)) p.found = true; });
     victorySent = false; saveT = 0;
     const p = CT.player; if (p && 'hp' in p) { p.hp = rpg.stats.hpMax; if ('stamina' in p) p.stamina = rpg.stats.staminaMax; }
+    if (rpg.flags.boneKingDead) victorySent = true;   // a finished game never shows the victory screen again
+    rpg.migrate();
     return true;
   };
   rpg.reset = function () {
@@ -358,10 +394,14 @@
     if (!rpg.stats) rpg.reset();
     bus.on('kill', onKill);
     bus.on('poi', onPoi);
+    bus.on('poi', d => { if (d && d.id === 'harrowby') { rpg.flags.visitedHarrowby = true; rpg.migrate(); } });
     bus.on('victory', () => { victorySent = true; rpg.flags.victory = true; if (qStage('throne') >= 0) rpg.completeQuest('throne'); rpg.save(); });
   };
+  let migT = 0;
   rpg.update = function (dt, core) {
     if (!core || core.state !== 'PLAY') return;
+    if (CT.vehicle && CT.vehicle.driving && !rpg.flags.drove) { rpg.flags.drove = true; rpg.migrate(); }
+    migT += dt; if (migT > 3) { migT = 0; rpg.migrate(); }
     saveT += dt;
     if (saveT >= 60) { saveT = 0; rpg.save(); }
   };

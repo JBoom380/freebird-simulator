@@ -519,7 +519,7 @@
   function autoWeather(dt, t) {
     // blood moon: rolled each dusk, lasts the night
     const nat = S.prevT >= 0 && Math.abs(t - S.prevT) < 0.02;
-    if (nat && S.prevT < 0.79 && t >= 0.79 && rnd() < 0.25) {
+    if (nat && S.prevT < 0.79 && t >= 0.79 && rnd() < (!!(CT.rpg && CT.rpg.flags && CT.rpg.flags.boneKingDead) ? 0.05 : 0.25)) {   // the curse lifted: blood moons grow rare
       setWeather('bloodmoon', 25);
       CT.bus.emit('notify', { text: 'The Blood Moon rises...', kind: 'omen' });
     }
@@ -549,10 +549,13 @@
       }
     }
     bolt.material.uniforms.uI.value = S.boltI > 1 ? 1 : S.boltI * (0.6 + 0.4 * Math.sin(S.boltI * 40));
+    // the curse lifted (the Bone King dead): the storm crown collapses and fades over ~10 s, and its lightning stops
+    S.crownFade = Math.max(0, Math.min(1, (S.crownFade == null ? 1 : S.crownFade) + (!!(CT.rpg && CT.rpg.flags && CT.rpg.flags.boneKingDead) ? -dt / 10 : dt / 10)));
+    crown.scale.multiplyScalar(0.25 + 0.75 * S.crownFade); crown.visible = S.crownFade > 0.02;
     // the storm crown strikes the citadel mountain all the time
     S.crownI = Math.max(0, S.crownI - dt * 4);
     S.nextCrown -= dt;
-    if (S.nextCrown <= 0) {
+    if (S.nextCrown <= 0 && S.crownFade > 0.5) {
       S.nextCrown = 1.2 + rnd() * 4.5;
       const ra = rnd() * TAU, rr = rnd() * 120;
       strikeBolt(crownBolt, Math.cos(ra) * rr, -10, Math.sin(ra) * rr, Math.cos(ra) * rr * 1.6 + (rnd() - 0.5) * 80, -240, Math.sin(ra) * rr * 1.6 + (rnd() - 0.5) * 80, 4, 4);
