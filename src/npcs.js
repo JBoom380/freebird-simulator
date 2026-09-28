@@ -852,11 +852,14 @@
     return sp;
   }
   function turnTo(n, want, dt, k) { let da = want - n.yawNow; while (da > PI) da -= TAU; while (da < -PI) da += TAU; n.yawNow += da * Math.min(1, dt * k); }
-  // Follow BEHIND (close, like a sworn housecarl): her slot is 3 m behind the player, 25 degrees off the reverse view direction (behind-left; mirrored
+  // Follow at the shoulder (see SLOT), 25 degrees off the reverse view direction (behind-left; mirrored
   // behind-right when the left is blocked). Combat (a monster within 15 m): she hangs back 7 m, on the side away from the
   // nearest monster. The compass shows her bearing (game.js marker kind 'companion'). A 1.5 m dead zone keeps her still while the player idles or backs up; she arcs around the player
   // (never through) when the view swings; she matches the player's pace and briefly outruns it to regain her slot.
-  const SLOT = { ang: PI - 25 * PI / 180, dist: 3.0, cAng: PI - 35 * PI / 180, cDist: 7 };   // angles from the view direction
+  // At the SHOULDER (a companion keeping pace, like Lydia): 2.75 m out at 42 degrees left of the view while walking, so she
+  // rides the left edge of the screen; when the player stops she steps up beside (2.5 m, 72 degrees left) and faces the
+  // same way. Combat: she hangs back 7 m, on the side away from the nearest monster. Mirrored right when the left is blocked.
+  const SLOT = { ang: 42 * PI / 180, dist: 2.75, sAng: 72 * PI / 180, sDist: 2.5, cAng: PI - 35 * PI / 180, cDist: 7, tAng: PI - 40 * PI / 180 };
   function slotAt(pp, fx, fz, rx, rz, side, ang, dist) {
     const c = Math.cos(ang), s = Math.sin(ang) * side;
     return new T.Vector3(pp.x + (fx * c + rx * s) * dist, 0, pp.z + (fz * c + rz * s) * dist);
@@ -872,7 +875,7 @@
     const dxp = n.pos.x - pp.x, dzp = n.pos.z - pp.z, dp = Math.hypot(dxp, dzp);
     // teleport only when far away or stuck: to her behind spot (out of view), in a puff of smoke
     if (dp > 60 || COMP.stuckT > 4) {
-      const v = slotAt(pp, fx, fz, rx, rz, COMP.side, SLOT.ang, 4);
+      const v = slotAt(pp, fx, fz, rx, rz, COMP.side, SLOT.tAng, 6);   // out of sight, behind-left
       if (CT.world && CT.world.collide) { const r = CT.world.collide(_w.set(v.x, 0, v.z), 0.45); if (r) v.set(r.x, 0, r.z); }
       fxPoof(n.pos); n.pos.set(v.x, H(v.x, v.z), v.z); fxPoof(n.pos);
       COMP.vel.set(0, 0, 0); COMP.stuckT = 0; COMP.moving = true; return 0;
@@ -894,8 +897,11 @@
     if (COMP.fpp && dt > 0) { const vx = (pp.x - COMP.fpp.x) / dt, vz = (pp.z - COMP.fpp.z) / dt, ok = Math.hypot(vx, vz) < 20;
       if (ok) { COMP.pv.x += (vx - COMP.pv.x) * Math.min(1, dt * 5); COMP.pv.z += (vz - COMP.pv.z) * Math.min(1, dt * 5); } } else if (!COMP.fpp) COMP.fpp = new T.Vector3();
     COMP.fpp.copy(pp); COMP.pSpeed = Math.hypot(COMP.pv.x, COMP.pv.z);
-    const tgt = slotAt(pp, fx, fz, rx, rz, COMP.side, combat ? SLOT.cAng : SLOT.ang, combat ? SLOT.cDist : SLOT.dist);
-    tgt.x += COMP.pv.x * 0.2; tgt.z += COMP.pv.z * 0.2;   // a small lead so she keeps pace without drawing level
+    COMP.stillT = COMP.pSpeed < 0.6 ? (COMP.stillT || 0) + dt : 0;
+    const stopped = COMP.stillT > 0.7;
+    const sAng = combat ? SLOT.cAng : stopped ? SLOT.sAng : SLOT.ang, sDist = combat ? SLOT.cDist : stopped ? SLOT.sDist : SLOT.dist;
+    const tgt = slotAt(pp, fx, fz, rx, rz, COMP.side, sAng, sDist);
+    tgt.x += COMP.pv.x * 0.1; tgt.z += COMP.pv.z * 0.1;   // a touch of lead so she keeps pace at the shoulder
     const dx = tgt.x - n.pos.x, dz = tgt.z - n.pos.z, d = Math.hypot(dx, dz);
     // dead zone only while the player is still: start beyond 1.5 m from the slot, stop within 0.4 m
     const pMoving = COMP.pSpeed > 1.0;
@@ -903,13 +909,16 @@
     if (COMP.moving && d < 0.4 && !pMoving) COMP.moving = false;
     let speed = 0, dirx = 0, dirz = 0;
     if (COMP.moving && d > 1e-3) {
-      speed = clamp(COMP.pSpeed * 0.9 + (d - 0.3) * 2.6, 0, 12.5);
+      const base = COMP.pSpeed;
+      speed = d > 10 ? Math.max(base + 3, 8.5) : d > 5 ? Math.max(base + 2, 5.6) : clamp(base + (d - 0.4) * 1.1, 0, base + 1.6);
+      if (!pMoving) speed = Math.min(speed, d > 5 ? speed : 1.6);   // stepping up beside a standing player is a stroll
       dirx = dx / d; dirz = dz / d;
       // arc around the player instead of cutting through: if the straight line passes the player within 2 m, go tangentially
       const ax = dxp / (dp || 1), az = dzp / (dp || 1), bx = (tgt.x - pp.x), bz = (tgt.z - pp.z), bl = Math.hypot(bx, bz) || 1;
       const t = clamp(((pp.x - n.pos.x) * dx + (pp.z - n.pos.z) * dz) / (d * d), 0, 1);
       const cx = n.pos.x + dx * t - pp.x, cz = n.pos.z + dz * t - pp.z;
-      if (Math.hypot(cx, cz) < 2.0 && dp < 7) {
+      const herSide = dxp * rx + dzp * rz, slotSide = (tgt.x - pp.x) * rx + (tgt.z - pp.z) * rz;
+      if (Math.hypot(cx, cz) < 1.3 && dp < 7 && herSide * slotSide < 0) {   // only when the straight line would cross the player
         const cr = ax * (bz / bl) - az * (bx / bl), sg = cr >= 0 ? 1 : -1;       // rotate toward the slot's side
         const tx = -az * sg, tz = ax * sg, R0 = Math.max(2.6, dp);
         const k = (R0 - dp) * 0.8;                                               // hold the arc radius
@@ -917,7 +926,7 @@
       }
     }
     _v.set(dirx * speed, 0, dirz * speed);
-    COMP.vel.lerp(_v, Math.min(1, dt * (speed > 0 ? 6 : 10)));
+    COMP.vel.lerp(_v, Math.min(1, dt * (speed > 0 ? 4 : 6)));   // ease in and out
     if (!COMP.moving && COMP.vel.lengthSq() < 0.02) COMP.vel.set(0, 0, 0);
     const ox = n.pos.x, oz = n.pos.z;
     n.pos.x += COMP.vel.x * dt; n.pos.z += COMP.vel.z * dt;
@@ -927,7 +936,8 @@
     const moved = dt > 0 ? Math.hypot(n.pos.x - ox, n.pos.z - oz) / dt : 0;
     if (speed > 1.5 && moved < speed * 0.2) COMP.stuckT += dt; else COMP.stuckT = Math.max(0, COMP.stuckT - dt * 2);
     if (moved > 0.5) turnTo(n, Math.atan2(COMP.vel.x, COMP.vel.z), dt, 8);
-    else if (dp < 12) turnTo(n, Math.atan2(-dxp, -dzp), dt, 3);   // at rest she looks back at the player
+    else if (stopped && !combat) turnTo(n, Math.atan2(fx, fz), dt, 3);   // idling beside the player, facing the same way
+    else if (dp < 12) turnTo(n, Math.atan2(-dxp, -dzp), dt, 3);
     return moved;
   }
   // ── Heal: toss the player a lit smoke ──────────────────────────────────────
@@ -1215,7 +1225,13 @@
   npcs.nearestInteractable = function (pos, maxDist) {
     if (!pos || (typeof CMD !== 'undefined' && CMD.active)) return null;
     let best = null, bd = maxDist || 3.2;
-    npcs.list.forEach(n => { if (n.kind === 'companion' && (!compOwned() || COMP.inCar)) return; const d = Math.hypot(pos.x - n.pos.x, pos.z - n.pos.z); if (d < bd && Math.abs((pos.y || n.pos.y) - n.pos.y) < 4) { bd = d; best = n; } });
+    const P = CT.player, lookX = P && P.yaw != null ? -Math.sin(P.yaw) : 0, lookZ = P && P.yaw != null ? -Math.cos(P.yaw) : -1;
+    npcs.list.forEach(n => {
+      if (n.kind === 'companion') {   // she walks within talking range: only take the E prompt when the player looks at her
+        if (!compOwned() || COMP.inCar) return;
+        const vx = n.pos.x - pos.x, vz = n.pos.z - pos.z, vl = Math.hypot(vx, vz) || 1;
+        if ((vx * lookX + vz * lookZ) / vl < Math.cos(30 * PI / 180)) return;
+      } const d = Math.hypot(pos.x - n.pos.x, pos.z - n.pos.z); if (d < bd && Math.abs((pos.y || n.pos.y) - n.pos.y) < 4) { bd = d; best = n; } });
     return best;
   };
   npcs.find = id => npcs.list.find(n => n.id === id) || null;
