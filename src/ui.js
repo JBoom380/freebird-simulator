@@ -657,8 +657,6 @@ window.CT = window.CT || {};
     g.globalAlpha = ma;
     const B = titleBtns(v); hoverSel(B, v.isTouch); S.sel = clamp(S.sel, 0, B.length - 1);
     B.forEach((b, i) => drawBtn(g, b, i === S.sel, t));
-    txt(g, '18+', 36, 694, 18, '#c8302a', { sp: 2, lw: 3, align: 'left' });
-    g.strokeStyle = '#c8302a'; g.lineWidth = 2; g.strokeRect(26, 680, 50, 28);
     txt(g, 'A GAME BY JOHN SLAGBOOM', 640, 700, 13, 'rgba(200,170,130,0.7)', { sp: 5, lw: 3 });
     txt(g, 'v1.0', 1252, 694, 16, 'rgba(200,170,130,0.7)', { align: 'right', lw: 3 });
     g.globalAlpha = 1;

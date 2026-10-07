@@ -112,7 +112,7 @@
   CT.renderMode = RMODE;
   CT.setRenderMode = m => { try { localStorage.setItem('crimsonThrone.render', m); } catch (e) {} location.reload(); };
   const core = CT.core = {
-    THREE: T, scene, camera, renderer, time: 0, dt: 0, state: 'GATE', input: null,
+    THREE: T, scene, camera, renderer, time: 0, dt: 0, state: 'TITLE', input: null,
     hurtFlash: 0, dizzy: 0, isTouch, quality: isTouch ? 'low' : 'high', torchLight,
     shake(amount, seconds) { S.shakeA = Math.max(S.shakeA, amount); S.shakeT = Math.max(S.shakeT, seconds || 0.25); },
     hitStop(seconds) { S.stopT = Math.max(S.stopT, Math.min(0.12, seconds)); },

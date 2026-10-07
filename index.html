@@ -103052,8 +103052,6 @@ window.CT = window.CT || {};
     g.globalAlpha = ma;
     const B = titleBtns(v); hoverSel(B, v.isTouch); S.sel = clamp(S.sel, 0, B.length - 1);
     B.forEach((b, i) => drawBtn(g, b, i === S.sel, t));
-    txt(g, '18+', 36, 694, 18, '#c8302a', { sp: 2, lw: 3, align: 'left' });
-    g.strokeStyle = '#c8302a'; g.lineWidth = 2; g.strokeRect(26, 680, 50, 28);
     txt(g, 'A GAME BY JOHN SLAGBOOM', 640, 700, 13, 'rgba(200,170,130,0.7)', { sp: 5, lw: 3 });
     txt(g, 'v1.0', 1252, 694, 16, 'rgba(200,170,130,0.7)', { align: 'right', lw: 3 });
     g.globalAlpha = 1;
@@ -104077,7 +104075,7 @@ window.CT = window.CT || {};
   CT.renderMode = RMODE;
   CT.setRenderMode = m => { try { localStorage.setItem('crimsonThrone.render', m); } catch (e) {} location.reload(); };
   const core = CT.core = {
-    THREE: T, scene, camera, renderer, time: 0, dt: 0, state: 'GATE', input: null,
+    THREE: T, scene, camera, renderer, time: 0, dt: 0, state: 'TITLE', input: null,
     hurtFlash: 0, dizzy: 0, isTouch, quality: isTouch ? 'low' : 'high', torchLight,
     shake(amount, seconds) { S.shakeA = Math.max(S.shakeA, amount); S.shakeT = Math.max(S.shakeT, seconds || 0.25); },
     hitStop(seconds) { S.stopT = Math.max(S.stopT, Math.min(0.12, seconds)); },
